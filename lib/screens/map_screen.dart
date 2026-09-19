@@ -11,6 +11,7 @@ import 'package:latlong2/latlong.dart';
 import '../app_colors.dart';
 import '../services/laporan_service.dart';
 import '../models/laporan_model.dart';
+import '../widgets/navigation_banner.dart';
 import '../widgets/open_street_map_tile_layer.dart';
 import 'detail_laporan_screen.dart';
 
@@ -36,6 +37,8 @@ class _MapScreenState extends State<MapScreen> {
   LatLng? _toPoint;
   _RouteFieldType _activeField = _RouteFieldType.to;
   LatLng? _currentPosition;
+  double _speedKmh = 0;
+  NavigationController? _nav;
   bool _navigating = false;
   bool _followUser = true;
   bool _routing = false;
@@ -55,6 +58,7 @@ class _MapScreenState extends State<MapScreen> {
   void dispose() {
     _suggestionDebounce?.cancel();
     _positionSub?.cancel();
+    _nav?.dispose();
     _fromCtrl.dispose();
     _toCtrl.dispose();
     super.dispose();
@@ -87,8 +91,9 @@ class _MapScreenState extends State<MapScreen> {
       setState(() => _route = safeRoute);
       _fitRoute(safeRoute.points);
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         _showRouteError(e.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _routing = false);
     }
@@ -157,7 +162,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _startNavigation() async {
     final route = _route;
-    if (route?.start == null || route?.end == null) return;
+    if (route == null || route.start == null || route.end == null) return;
     try {
       final allowed = await _ensureLocationPermission();
       if (!allowed) return;
@@ -165,6 +170,18 @@ class _MapScreenState extends State<MapScreen> {
       final current = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
+
+      // Siapkan pelacak belokan (banner ala Google Maps).
+      _nav?.dispose();
+      _nav = route.steps.isEmpty
+          ? null
+          : NavigationController(NavRoute(
+              route.points,
+              route.steps,
+              route.distanceMeters,
+              route.durationSeconds,
+            ));
+
       _updateCurrentPosition(current);
       setState(() {
         _navigating = true;
@@ -175,7 +192,7 @@ class _MapScreenState extends State<MapScreen> {
       _positionSub = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 8,
+          distanceFilter: 3,
         ),
       ).listen(_updateCurrentPosition);
     } catch (_) {
@@ -205,7 +222,12 @@ class _MapScreenState extends State<MapScreen> {
   void _updateCurrentPosition(Position position) {
     if (!mounted) return;
     final point = LatLng(position.latitude, position.longitude);
-    setState(() => _currentPosition = point);
+    setState(() {
+      _currentPosition = point;
+      // Position.speed dalam m/s -> km/j (bisa -1 kalau tidak tersedia)
+      _speedKmh = math.max(0, position.speed * 3.6);
+    });
+    _nav?.updatePosition(point);
     if (_navigating && _followUser) {
       _mapController.move(point, 17);
     }
@@ -214,10 +236,13 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _stopNavigation() async {
     await _positionSub?.cancel();
     _positionSub = null;
+    _nav?.dispose();
+    _nav = null;
     if (mounted) {
       setState(() {
         _navigating = false;
         _followUser = false;
+        _speedKmh = 0;
       });
     }
   }
@@ -351,7 +376,7 @@ class _MapScreenState extends State<MapScreen> {
   Future<_SafeRoute> _fetchRoute(List<LatLng> points) async {
     final coords = points.map((p) => '${p.longitude},${p.latitude}').join(';');
     final uri = Uri.parse(
-        'https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson&alternatives=false&steps=false');
+        'https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson&alternatives=false&steps=true');
     final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('Gagal mengambil rute.');
 
@@ -362,6 +387,23 @@ class _MapScreenState extends State<MapScreen> {
     final route = routes.first as Map<String, dynamic>;
     final geometry = route['geometry'] as Map<String, dynamic>;
     final coordinates = geometry['coordinates'] as List<dynamic>;
+
+    // Ambil langkah belokan dari semua leg. Untuk rute dengan waypoint
+    // (rute alternatif), buang "arrive"/"depart" di titik sambungan leg.
+    final steps = <NavStep>[];
+    final legs = route['legs'] as List<dynamic>? ?? [];
+    for (var li = 0; li < legs.length; li++) {
+      final legSteps =
+          (legs[li] as Map<String, dynamic>)['steps'] as List<dynamic>? ?? [];
+      for (final raw in legSteps) {
+        final s = raw as Map<String, dynamic>;
+        final type = (s['maneuver'] as Map<String, dynamic>)['type'];
+        if (li > 0 && type == 'depart') continue;
+        if (li < legs.length - 1 && type == 'arrive') continue;
+        steps.add(NavStep.fromJson(s));
+      }
+    }
+
     return _SafeRoute(
       points: coordinates.map((coord) {
         final pair = coord as List<dynamic>;
@@ -369,6 +411,7 @@ class _MapScreenState extends State<MapScreen> {
       }).toList(),
       distanceMeters: (route['distance'] as num).toDouble(),
       durationSeconds: (route['duration'] as num).toDouble(),
+      steps: steps,
     );
   }
 
@@ -551,7 +594,7 @@ class _MapScreenState extends State<MapScreen> {
       backgroundColor: AppColors.bg,
       body: Stack(
         children: [
-          // ── OpenStreetMap ──
+          // ── Peta ──
           Stack(
             fit: StackFit.expand,
             children: [
@@ -570,14 +613,14 @@ class _MapScreenState extends State<MapScreen> {
                       polylines: [
                         Polyline(
                           points: _route!.points,
-                          strokeWidth: 7,
+                          strokeWidth: 13,
                           color: Colors.white,
                         ),
                         Polyline(
                           points: _route!.points,
-                          strokeWidth: 4,
+                          strokeWidth: 9,
                           color: _route!.isSafer
-                              ? const Color(0xFF16A34A)
+                              ? const Color(0xFF1A73E8)
                               : AppColors.red,
                         ),
                       ],
@@ -704,17 +747,23 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
 
+          // ── Banner belokan ala Google Maps ──
           if (_navigating && _route != null)
             Positioned(
               top: 0,
-              left: 16,
-              right: 16,
-              child: SafeArea(
-                child: _NavigationHeader(
-                  route: _route!,
-                  distanceText: _navigationDistanceText,
-                ),
-              ),
+              left: 0,
+              right: 0,
+              child: _nav != null
+                  ? NavigationBanner(controller: _nav!)
+                  : SafeArea(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: _NavigationHeader(
+                          route: _route!,
+                          distanceText: _navigationDistanceText,
+                        ),
+                      ),
+                    ),
             ),
 
           if (_navigating && _route != null)
@@ -771,6 +820,14 @@ class _MapScreenState extends State<MapScreen> {
                   ),
                 ),
               ),
+            ),
+
+          // ── Kecepatan (kiri bawah, ala Google Maps) ──
+          if (_navigating)
+            Positioned(
+              left: 16,
+              bottom: 150,
+              child: _SpeedBadge(kmh: _speedKmh),
             ),
 
           // ── Reset view button ──
@@ -1340,6 +1397,7 @@ class _CurrentLocationMarker extends StatelessWidget {
   }
 }
 
+/// Header cadangan kalau rute tidak punya data langkah belokan.
 class _NavigationHeader extends StatelessWidget {
   final _SafeRoute route;
   final String distanceText;
@@ -1385,9 +1443,7 @@ class _NavigationHeader extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  route.isSafer
-                      ? 'Ikuti rute aman SafeZone'
-                      : 'Ikuti rute dengan hati-hati',
+                  'Mode dasar: data belokan tidak tersedia',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: GoogleFonts.plusJakartaSans(
@@ -1511,10 +1567,61 @@ class _NavigationPanel extends StatelessWidget {
   }
 }
 
+class _SpeedBadge extends StatelessWidget {
+  final double kmh;
+
+  const _SpeedBadge({required this.kmh});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 64,
+      height: 64,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        border: Border.all(color: const Color(0xFFD0D5DD), width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: .15),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          )
+        ],
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            kmh.round().toString(),
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+              color: AppColors.text,
+              height: 1,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'km/j',
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: AppColors.text2,
+              height: 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _SafeRoute {
   final List<LatLng> points;
   final double distanceMeters;
   final double durationSeconds;
+  final List<NavStep> steps;
   final LatLng? start;
   final LatLng? end;
   final _DangerPoint? danger;
@@ -1525,6 +1632,7 @@ class _SafeRoute {
     required this.points,
     required this.distanceMeters,
     required this.durationSeconds,
+    this.steps = const [],
     this.start,
     this.end,
     this.danger,
@@ -1558,6 +1666,7 @@ class _SafeRoute {
       points: points,
       distanceMeters: distanceMeters,
       durationSeconds: durationSeconds,
+      steps: steps,
       start: start ?? this.start,
       end: end ?? this.end,
       danger: danger ?? this.danger,
