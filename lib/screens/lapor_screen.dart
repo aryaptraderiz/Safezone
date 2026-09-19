@@ -1,9 +1,15 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' hide Path;
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../app_colors.dart';
 import '../services/auth_service.dart';
 import '../services/laporan_service.dart';
 import '../models/laporan_model.dart';
+import '../widgets/open_street_map_tile_layer.dart';
 
 class LaporScreen extends StatefulWidget {
   final VoidCallback onKirim;
@@ -19,8 +25,10 @@ class _LaporScreenState extends State<LaporScreen> {
   int? _selectedKat;
   final _descCtrl = TextEditingController();
   final _lokasiCtrl = TextEditingController();
-  bool _hasPhoto = false;
+  File? _selectedImage;
+  LatLng? _selectedLocation;
   bool _loading = false;
+  final _mapController = MapController();
 
   final _kats = [
     _KatData(Icons.motorcycle_rounded, 'Begal'),
@@ -59,6 +67,10 @@ class _LaporScreenState extends State<LaporScreen> {
       _toast('Ceritain dulu apa yang terjadi!');
       return;
     }
+    if (_selectedLocation == null) {
+      _toast('Pilih lokasi di peta terlebih dahulu!');
+      return;
+    }
 
     final user = AuthService.currentUser;
     if (user == null) {
@@ -69,16 +81,24 @@ class _LaporScreenState extends State<LaporScreen> {
     setState(() => _loading = true);
 
     try {
+      String? imageUrl;
+      if (_selectedImage != null) {
+        imageUrl = await LaporanService.uploadFoto(_selectedImage!);
+      }
+
       final laporan = LaporanModel(
         uid: user.uid,
         namaUser: user.displayName ?? user.email ?? 'Anonim',
         kategori: _kats[_selectedKat!].label,
         lokasi: _lokasiCtrl.text.trim().isEmpty
-            ? 'Lokasi tidak disebutkan'
+            ? 'Lokasi dari Peta'
             : _lokasiCtrl.text.trim(),
         deskripsi: _descCtrl.text.trim(),
-        hasPhoto: _hasPhoto,
+        hasPhoto: _selectedImage != null,
+        imageUrl: imageUrl,
         createdAt: DateTime.now(),
+        geoPoint:
+            GeoPoint(_selectedLocation!.latitude, _selectedLocation!.longitude),
       );
 
       await LaporanService.kirim(laporan);
@@ -86,7 +106,8 @@ class _LaporScreenState extends State<LaporScreen> {
       // Reset form
       setState(() {
         _selectedKat = null;
-        _hasPhoto = false;
+        _selectedImage = null;
+        _selectedLocation = null;
       });
       _descCtrl.clear();
       _lokasiCtrl.clear();
@@ -96,6 +117,17 @@ class _LaporScreenState extends State<LaporScreen> {
       _toast('Gagal mengirim laporan. Coba lagi.');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _pickImage() async {
+    final picker = ImagePicker();
+    final pickedFile =
+        await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+    if (pickedFile != null) {
+      setState(() {
+        _selectedImage = File(pickedFile.path);
+      });
     }
   }
 
@@ -113,16 +145,19 @@ class _LaporScreenState extends State<LaporScreen> {
           Positioned(
             top: 220,
             left: -40,
-            child: _Blob(width: 140, height: 140, color: const Color(0xFFFEF9C3)),
+            child:
+                _Blob(width: 140, height: 140, color: const Color(0xFFFEF9C3)),
           ),
           SafeArea(
             child: Column(
               children: [
                 // Header
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
                   decoration: const BoxDecoration(
-                    border: Border(bottom: BorderSide(color: AppColors.cream, width: 1)),
+                    border: Border(
+                        bottom: BorderSide(color: AppColors.cream, width: 1)),
                   ),
                   child: Stack(
                     alignment: Alignment.center,
@@ -200,7 +235,8 @@ class _LaporScreenState extends State<LaporScreen> {
                                       ),
                                     ),
                                     child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
                                       children: [
                                         Container(
                                           width: 44,
@@ -239,7 +275,60 @@ class _LaporScreenState extends State<LaporScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _CLabel('Lokasi Kejadian'),
+                            _CLabel('Lokasi Kejadian (Tap di peta)'),
+                            const SizedBox(height: 11),
+                            Container(
+                              height: 150,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                    color: AppColors.cream3, width: 1.5),
+                              ),
+                              clipBehavior: Clip.hardEdge,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  const OpenStreetMapFallback(dense: true),
+                                  FlutterMap(
+                                    mapController: _mapController,
+                                    options: MapOptions(
+                                      initialCenter:
+                                          const LatLng(-6.200000, 106.816666),
+                                      initialZoom: 13,
+                                      onTap: (tapPos, latLng) {
+                                        setState(
+                                            () => _selectedLocation = latLng);
+                                      },
+                                    ),
+                                    children: [
+                                      const OpenStreetMapTileLayer(),
+                                      if (_selectedLocation != null)
+                                        MarkerLayer(markers: [
+                                          Marker(
+                                            point: _selectedLocation!,
+                                            width: 36,
+                                            height: 36,
+                                            child: const Icon(
+                                              Icons.location_on_rounded,
+                                              color: AppColors.red,
+                                              size: 36,
+                                            ),
+                                          )
+                                        ]),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (_selectedLocation != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 6),
+                                child: Text(
+                                  '📍 ${_selectedLocation!.latitude.toStringAsFixed(5)}, ${_selectedLocation!.longitude.toStringAsFixed(5)}',
+                                  style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 11, color: AppColors.text3),
+                                ),
+                              ),
                             const SizedBox(height: 11),
                             Container(
                               padding: const EdgeInsets.only(left: 4, right: 4),
@@ -251,8 +340,8 @@ class _LaporScreenState extends State<LaporScreen> {
                               child: Row(
                                 children: [
                                   const SizedBox(width: 10),
-                                  const Icon(Icons.location_on_rounded,
-                                      color: AppColors.red, size: 20),
+                                  const Icon(Icons.location_city_rounded,
+                                      color: AppColors.text2, size: 20),
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: TextField(
@@ -260,7 +349,7 @@ class _LaporScreenState extends State<LaporScreen> {
                                       style: GoogleFonts.plusJakartaSans(
                                           fontSize: 14, color: AppColors.text),
                                       decoration: InputDecoration(
-                                        hintText: 'Ketik lokasi atau pin di peta',
+                                        hintText: 'Detail nama jalan/tempat',
                                         hintStyle: GoogleFonts.plusJakartaSans(
                                             fontSize: 14,
                                             color: AppColors.text3),
@@ -271,16 +360,6 @@ class _LaporScreenState extends State<LaporScreen> {
                                       ),
                                     ),
                                   ),
-                                  Container(
-                                    width: 34,
-                                    height: 34,
-                                    decoration: const BoxDecoration(
-                                        color: AppColors.yellow,
-                                        shape: BoxShape.circle),
-                                    child: const Icon(Icons.my_location_rounded,
-                                        size: 18, color: Color(0xFF7A5800)),
-                                  ),
-                                  const SizedBox(width: 4),
                                 ],
                               ),
                             ),
@@ -332,11 +411,10 @@ class _LaporScreenState extends State<LaporScreen> {
                             _CLabel('Upload Bukti Foto/Video'),
                             const SizedBox(height: 11),
                             GestureDetector(
-                              onTap: () =>
-                                  setState(() => _hasPhoto = !_hasPhoto),
+                              onTap: _pickImage,
                               child: CustomPaint(
                                 painter: _DashedBorderPainter(
-                                  color: _hasPhoto
+                                  color: _selectedImage != null
                                       ? AppColors.red
                                       : AppColors.cream3,
                                   borderRadius: 16,
@@ -346,46 +424,54 @@ class _LaporScreenState extends State<LaporScreen> {
                                 ),
                                 child: Container(
                                   width: double.infinity,
-                                  padding:
-                                      const EdgeInsets.symmetric(vertical: 26),
-                                  child: Column(
-                                    children: [
-                                      Container(
-                                        width: 48,
-                                        height: 48,
-                                        decoration: BoxDecoration(
-                                            color: _hasPhoto
-                                                ? AppColors.redLighter
-                                                : AppColors.redLight,
-                                            shape: BoxShape.circle),
-                                        child: Icon(
-                                            _hasPhoto
-                                                ? Icons.check_circle_rounded
-                                                : Icons.add_a_photo_outlined,
-                                            color: AppColors.red,
-                                            size: 24),
-                                      ),
-                                      const SizedBox(height: 7),
-                                      Text(
-                                          _hasPhoto
-                                              ? 'Foto berhasil dipilih!'
-                                              : 'Tap untuk upload atau ambil foto.',
-                                          style: GoogleFonts.plusJakartaSans(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.w600,
-                                              color: AppColors.text),
-                                          textAlign: TextAlign.center),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                          _hasPhoto
-                                              ? 'Tap lagi untuk ganti foto'
-                                              : 'Opsional, tapi ngebantu banget!',
-                                          style: GoogleFonts.plusJakartaSans(
-                                              fontSize: 12,
-                                              color: AppColors.text3),
-                                          textAlign: TextAlign.center),
-                                    ],
+                                  height: _selectedImage != null ? 200 : null,
+                                  padding: _selectedImage != null
+                                      ? EdgeInsets.zero
+                                      : const EdgeInsets.symmetric(
+                                          vertical: 26),
+                                  clipBehavior: Clip.hardEdge,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(16),
                                   ),
+                                  child: _selectedImage != null
+                                      ? Image.file(
+                                          _selectedImage!,
+                                          fit: BoxFit.cover,
+                                          width: double.infinity,
+                                        )
+                                      : Column(
+                                          children: [
+                                            Container(
+                                              width: 48,
+                                              height: 48,
+                                              decoration: BoxDecoration(
+                                                  color: AppColors.redLight,
+                                                  shape: BoxShape.circle),
+                                              child: const Icon(
+                                                  Icons.add_a_photo_outlined,
+                                                  color: AppColors.red,
+                                                  size: 24),
+                                            ),
+                                            const SizedBox(height: 7),
+                                            Text(
+                                                'Tap untuk upload atau ambil foto.',
+                                                style:
+                                                    GoogleFonts.plusJakartaSans(
+                                                        fontSize: 14,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                        color: AppColors.text),
+                                                textAlign: TextAlign.center),
+                                            const SizedBox(height: 4),
+                                            Text(
+                                                'Opsional, tapi ngebantu banget!',
+                                                style:
+                                                    GoogleFonts.plusJakartaSans(
+                                                        fontSize: 12,
+                                                        color: AppColors.text3),
+                                                textAlign: TextAlign.center),
+                                          ],
+                                        ),
                                 ),
                               ),
                             ),
@@ -417,8 +503,7 @@ class _LaporScreenState extends State<LaporScreen> {
                             backgroundColor: AppColors.red,
                             elevation: 8,
                             shadowColor: AppColors.red.withOpacity(0.22),
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 18),
+                            padding: const EdgeInsets.symmetric(vertical: 18),
                             shape: const StadiumBorder(),
                             disabledBackgroundColor:
                                 AppColors.red.withOpacity(0.5),
@@ -481,8 +566,7 @@ class _DashedBorderPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _DashedBorderPainter old) =>
-      color != old.color;
+  bool shouldRepaint(covariant _DashedBorderPainter old) => color != old.color;
 }
 
 class _Blob extends StatelessWidget {

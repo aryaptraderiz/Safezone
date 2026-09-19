@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import '../app_colors.dart';
 import '../models/laporan_model.dart';
 import '../services/laporan_service.dart';
 import '../services/auth_service.dart';
+import '../widgets/open_street_map_tile_layer.dart';
 
 class DetailLaporanScreen extends StatefulWidget {
   final String laporanId;
@@ -131,9 +134,8 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
       // Rollback komentar lokal kalau gagal
       if (mounted) {
         setState(() {
-          _komentars = _komentars
-              .where((k) => k.id != localKomentar.id)
-              .toList();
+          _komentars =
+              _komentars.where((k) => k.id != localKomentar.id).toList();
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -141,8 +143,8 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
                 style: GoogleFonts.plusJakartaSans(color: Colors.white)),
             backgroundColor: AppColors.red,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             margin: const EdgeInsets.fromLTRB(20, 0, 20, 20),
           ),
         );
@@ -263,8 +265,7 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
                             ),
                           ),
                           child: Icon(kat.icon,
-                              size: 80,
-                              color: Colors.white.withOpacity(0.15)),
+                              size: 80, color: Colors.white.withOpacity(0.15)),
                         ),
                         Positioned(
                           top: 90,
@@ -315,10 +316,8 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
                                   border: Border.all(
                                       color: AppColors.yellow, width: 2),
                                 ),
-                                child: const Icon(
-                                    Icons.account_circle_rounded,
-                                    color: AppColors.text2,
-                                    size: 24),
+                                child: const Icon(Icons.account_circle_rounded,
+                                    color: AppColors.text2, size: 24),
                               ),
                               const SizedBox(width: 10),
                               Column(
@@ -410,47 +409,79 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
                         ),
                         const SizedBox(height: 12),
 
-                        // ── Map Placeholder ──
-                        Container(
-                          height: 130,
-                          decoration: BoxDecoration(
-                              color: AppColors.cream,
-                              borderRadius: BorderRadius.circular(16)),
-                          clipBehavior: Clip.hardEdge,
-                          child: Stack(children: [
-                            CustomPaint(
-                              size: const Size(double.infinity, 130),
-                              painter: _MapGridPainter(),
+                        // ── Foto ──
+                        if (laporan.imageUrl != null) ...[
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(16),
+                            child: Image.network(
+                              laporan.imageUrl!,
+                              width: double.infinity,
+                              height: 200,
+                              fit: BoxFit.cover,
                             ),
-                            Center(
-                              child: Container(
-                                width: 80,
-                                height: 80,
-                                decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: AppColors.red.withOpacity(0.08)),
-                              ),
-                            ),
-                            Center(
-                              child: Container(
-                                width: 42,
-                                height: 42,
-                                decoration: BoxDecoration(
-                                  color: AppColors.red,
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                    BoxShadow(
-                                        color: AppColors.red.withOpacity(0.4),
-                                        blurRadius: 16,
-                                        spreadRadius: 4)
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+
+                        // ── Map ──
+                        if (laporan.geoPoint != null)
+                          Container(
+                            height: 150,
+                            decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                    color: AppColors.cream, width: 1.5)),
+                            clipBehavior: Clip.hardEdge,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                const OpenStreetMapFallback(dense: true),
+                                FlutterMap(
+                                  options: MapOptions(
+                                    initialCenter: LatLng(
+                                      laporan.geoPoint!.latitude,
+                                      laporan.geoPoint!.longitude,
+                                    ),
+                                    initialZoom: 16,
+                                    interactionOptions:
+                                        const InteractionOptions(
+                                      flags: InteractiveFlag.none,
+                                    ),
+                                  ),
+                                  children: [
+                                    const OpenStreetMapTileLayer(),
+                                    MarkerLayer(markers: [
+                                      Marker(
+                                        point: LatLng(
+                                          laporan.geoPoint!.latitude,
+                                          laporan.geoPoint!.longitude,
+                                        ),
+                                        width: 40,
+                                        height: 40,
+                                        child: const Icon(
+                                          Icons.location_on_rounded,
+                                          color: AppColors.red,
+                                          size: 40,
+                                        ),
+                                      )
+                                    ]),
                                   ],
                                 ),
-                                child: const Icon(Icons.location_on_rounded,
-                                    color: Colors.white, size: 22),
-                              ),
+                              ],
                             ),
-                          ]),
-                        ),
+                          )
+                        else
+                          Container(
+                            height: 150,
+                            decoration: BoxDecoration(
+                                color: AppColors.cream,
+                                borderRadius: BorderRadius.circular(16)),
+                            child: Center(
+                              child: Text('Lokasi tidak tersedia di peta',
+                                  style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 13, color: AppColors.text3)),
+                            ),
+                          ),
                         const SizedBox(height: 24),
 
                         // ── Status Verifikasi ──
@@ -514,8 +545,7 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
                                       fontWeight: FontWeight.w800,
                                       color: AppColors.text)),
                               const SizedBox(width: 6),
-                              const Text('💬',
-                                  style: TextStyle(fontSize: 16)),
+                              const Text('💬', style: TextStyle(fontSize: 16)),
                             ]),
                             Container(
                               padding: const EdgeInsets.symmetric(
@@ -540,8 +570,7 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
                               child: Text(
                                   'Belum ada komentar. Jadi yang pertama!',
                                   style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 13,
-                                      color: AppColors.text3)),
+                                      fontSize: 13, color: AppColors.text3)),
                             ),
                           ),
 
@@ -780,9 +809,7 @@ class _KomentarItem extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text(komentar.isi,
                     style: GoogleFonts.plusJakartaSans(
-                        fontSize: 13,
-                        color: AppColors.text2,
-                        height: 1.4)),
+                        fontSize: 13, color: AppColors.text2, height: 1.4)),
                 const SizedBox(height: 8),
                 if (!isLocal)
                   Row(children: [
@@ -827,33 +854,6 @@ class _KomentarItem extends StatelessWidget {
   }
 }
 
-// ── Map Grid Painter ──
-class _MapGridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = AppColors.cream2
-      ..strokeWidth = 1;
-    const step = 30.0;
-    for (double x = 0; x <= size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y <= size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-    final roadPaint = Paint()
-      ..color = const Color(0xFFD8C8B8)
-      ..strokeWidth = 10;
-    canvas.drawLine(Offset(0, size.height / 2),
-        Offset(size.width, size.height / 2), roadPaint);
-    canvas.drawLine(Offset(size.width / 2, 0),
-        Offset(size.width / 2, size.height), roadPaint);
-  }
-
-  @override
-  bool shouldRepaint(_) => false;
-}
-
 // ── Helpers ──
 class _KatInfo {
   final IconData icon;
@@ -865,17 +865,17 @@ class _KatInfo {
 _KatInfo _katInfo(String kategori) {
   switch (kategori) {
     case 'Begal':
-      return _KatInfo(Icons.motorcycle_rounded,
-          const Color(0xFFD94435), const Color(0xFF8B1E14));
+      return _KatInfo(Icons.motorcycle_rounded, const Color(0xFFD94435),
+          const Color(0xFF8B1E14));
     case 'Tawuran':
-      return _KatInfo(Icons.people_alt_rounded,
-          const Color(0xFFD97706), const Color(0xFF92400E));
+      return _KatInfo(Icons.people_alt_rounded, const Color(0xFFD97706),
+          const Color(0xFF92400E));
     case 'Kecelakaan':
-      return _KatInfo(Icons.directions_car_rounded,
-          const Color(0xFF1E6B4A), const Color(0xFF0D3D2A));
+      return _KatInfo(Icons.directions_car_rounded, const Color(0xFF1E6B4A),
+          const Color(0xFF0D3D2A));
     default:
-      return _KatInfo(Icons.warning_rounded,
-          const Color(0xFF6B4F35), const Color(0xFF3D2D1E));
+      return _KatInfo(Icons.warning_rounded, const Color(0xFF6B4F35),
+          const Color(0xFF3D2D1E));
   }
 }
 

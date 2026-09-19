@@ -8,6 +8,7 @@ class LaporanModel {
   final String lokasi;
   final String deskripsi;
   final bool hasPhoto;
+  final String? imageUrl;
   final DateTime createdAt;
   final GeoPoint? geoPoint;
   final int konfirmasi;  // vote "Beneran Ada"
@@ -21,6 +22,7 @@ class LaporanModel {
     required this.lokasi,
     required this.deskripsi,
     this.hasPhoto = false,
+    this.imageUrl,
     required this.createdAt,
     this.geoPoint,
     this.konfirmasi = 0,
@@ -41,6 +43,7 @@ class LaporanModel {
       'lokasi': lokasi,
       'deskripsi': deskripsi,
       'hasPhoto': hasPhoto,
+      'imageUrl': imageUrl,
       'createdAt': FieldValue.serverTimestamp(),
       'geoPoint': geoPoint,
       'konfirmasi': konfirmasi,
@@ -58,6 +61,7 @@ class LaporanModel {
       lokasi: d['lokasi'] ?? '',
       deskripsi: d['deskripsi'] ?? '',
       hasPhoto: d['hasPhoto'] ?? false,
+      imageUrl: d['imageUrl'],
       createdAt: (d['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       geoPoint: d['geoPoint'],
       konfirmasi: d['konfirmasi'] ?? 0,

@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import '../models/laporan_model.dart';
 import 'notification_service.dart';
 
@@ -15,6 +17,19 @@ class LaporanService {
       namaUser: laporan.namaUser,
       lokasi: laporan.lokasi,
     );
+  }
+
+  // Upload foto ke Firebase Storage
+  static Future<String?> uploadFoto(File file) async {
+    try {
+      final fileName = '${DateTime.now().millisecondsSinceEpoch}_${file.path.split('/').last}';
+      final ref = FirebaseStorage.instance.ref().child('laporan_images').child(fileName);
+      final task = await ref.putFile(file);
+      return await task.ref.getDownloadURL();
+    } catch (e) {
+      print('Error upload foto: $e');
+      return null;
+    }
   }
 
   // Stream semua laporan realtime
