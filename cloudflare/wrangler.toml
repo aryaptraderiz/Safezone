@@ -1,0 +1,23 @@
+name = "safezone-chatbot"
+main = "src/worker.js"
+compatibility_date = "2026-10-29"
+workers_dev = true
+
+[vars]
+FIREBASE_PROJECT_ID = "safezone-app-32b62"
+
+[[ratelimits]]
+name = "CHAT_USER_LIMITER"
+namespace_id = "62481397"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
+[[ratelimits]]
+name = "CHAT_TOTAL_LIMITER"
+namespace_id = "62481398"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60

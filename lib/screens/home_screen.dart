@@ -1,35 +1,1590 @@
 import 'dart:math' as math;
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:video_player/video_player.dart';
 import '../app_colors.dart';
+import '../models/laporan_model.dart';
+import '../models/saved_location_model.dart';
+import '../services/auth_service.dart';
+import '../services/laporan_service.dart';
+import '../services/saved_location_service.dart';
+import 'detail_laporan_screen.dart';
+import 'notice_screen.dart';
+import 'safe_chatbot_screen.dart';
+import 'saved_locations_screen.dart';
 
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+  final VoidCallback? onOpenSettings;
+  final VoidCallback? onOpenMap;
+  final VoidCallback? onOpenLapor;
+  final VoidCallback? onOpenAlerts;
+  final VoidCallback? onOpenSafeFriend;
+  const HomeScreen({
+    super.key,
+    this.onOpenSettings,
+    this.onOpenMap,
+    this.onOpenLapor,
+    this.onOpenAlerts,
+    this.onOpenSafeFriend,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bg,
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.only(bottom: 20),
-          children: const [
-            _TopBar(),
-            _HeroSection(),
-            _AlertCard(),
-            _Dots(),
-            _CategorySection(),
-            _LaporanTerbaru(),
-          ],
+        child: _SafeHomeDashboard(
+          onSettings: onOpenSettings,
+          onMap: onOpenMap,
+          onReport: onOpenLapor,
+          onAlerts: onOpenAlerts,
+          onSafeFriend: onOpenSafeFriend,
         ),
       ),
     );
   }
 }
 
+class _SafeHomeDashboard extends StatelessWidget {
+  final VoidCallback? onSettings;
+  final VoidCallback? onMap;
+  final VoidCallback? onReport;
+  final VoidCallback? onAlerts;
+  final VoidCallback? onSafeFriend;
+
+  const _SafeHomeDashboard({
+    this.onSettings,
+    this.onMap,
+    this.onReport,
+    this.onAlerts,
+    this.onSafeFriend,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final name = AuthService.currentUser?.displayName?.trim();
+    return StreamBuilder<List<LaporanModel>>(
+      stream: LaporanService.streamAll(),
+      builder: (context, snapshot) {
+        final reports = snapshot.data ?? const <LaporanModel>[];
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(0, 0, 0, 28),
+          children: [
+            _WelcomeCard(
+                name: name,
+                onSettings: onSettings,
+                reports: reports),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Transform.translate(
+                offset: const Offset(0, -28),
+                child: _ShortcutPanel(
+                  onProfile: onSettings,
+                  onHelp: () => _showReportingGuide(context, onReport),
+                  onNotice: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                        builder: (_) => const NoticeScreen()),
+                  ),
+                  onChat: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                        builder: (_) => const SafeChatbotScreen()),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 0, 18, 0),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 0),
+                    Row(children: [
+                      Expanded(
+                          child: _SectionHeading(title: 'Layanan keselamatan')),
+                      Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(20),
+                              border:
+                                  Border.all(color: const Color(0xFFECE5DC))),
+                          child: Text('7 layanan',
+                              style: GoogleFonts.plusJakartaSans(
+                                  color: AppColors.text2,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w700))),
+                    ]),
+                    const SizedBox(height: 12),
+                    const _SavedHomeCard(),
+                    const SizedBox(height: 10),
+                    GridView.count(
+                      crossAxisCount: 2,
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      mainAxisSpacing: 11,
+                      crossAxisSpacing: 11,
+                      childAspectRatio: 1.52,
+                      children: [
+                        _ServiceTile(
+                            icon: Icons.radar_rounded,
+                            title: 'Home Monitoring',
+                            subtitle: 'Pantau laporan',
+                            color: const Color(0xFF3978D5),
+                            onTap: onAlerts),
+                        _ServiceTile(
+                            icon: Icons.sos_rounded,
+                            title: 'Nomor penting',
+                            subtitle: 'Darurat & bantuan',
+                            color: AppColors.red,
+                            onTap: () => _showEmergencyNumbers(context)),
+                        _ServiceTile(
+                            icon: Icons.videocam_rounded,
+                            title: 'Safe Video',
+                            subtitle: 'Bukti kejadian',
+                            color: const Color(0xFFE63E78),
+                            onTap: onReport),
+                        _ServiceTile(
+                            icon: Icons.person_add_alt_1_rounded,
+                            title: 'Safe Friend',
+                            subtitle: 'Tambah teman',
+                            color: const Color(0xFFD49A17),
+                            onTap: onSafeFriend),
+                        _ServiceTile(
+                            icon: Icons.groups_rounded,
+                            title: 'Scout',
+                            subtitle: 'Komunitas sekitar',
+                            color: const Color(0xFF8058B8),
+                            onTap: onAlerts),
+                        _ServiceTile(
+                            icon: Icons.map_rounded,
+                            title: 'Safety Map',
+                            subtitle: 'Peta keamanan',
+                            color: const Color(0xFF4586D6),
+                            onTap: onMap),
+                      ],
+                    ),
+                    const SizedBox(height: 22),
+                    Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            Text('Laporan terbaru',
+                                style: GoogleFonts.plusJakartaSans(
+                                    color: AppColors.text,
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w800)),
+                            const SizedBox(height: 3),
+                            Text('Info keamanan dari warga sekitar',
+                                style: GoogleFonts.plusJakartaSans(
+                                    color: AppColors.text3, fontSize: 10.5)),
+                          ])),
+                      TextButton(
+                          onPressed: onAlerts,
+                          style: TextButton.styleFrom(
+                              foregroundColor: AppColors.red,
+                              visualDensity: VisualDensity.compact,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 10)),
+                          child: const Text('Semua')),
+                    ]),
+                    const SizedBox(height: 9),
+                    _RecentReportList(
+                      reports: reports,
+                      loading:
+                          snapshot.connectionState == ConnectionState.waiting &&
+                              !snapshot.hasData,
+                      error: snapshot.hasError,
+                    ),
+                  ]),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+void _showHomeInfo(BuildContext context, String title, String message) {
+  showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+            title: Text(title,
+                style:
+                    GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w800)),
+            content:
+                Text(message, style: GoogleFonts.plusJakartaSans(height: 1.5)),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Mengerti'))
+            ],
+          ));
+}
+
+void _showReportingGuide(BuildContext context, VoidCallback? onReport) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    isScrollControlled: true,
+    builder: (sheetContext) => Container(
+      padding: const EdgeInsets.fromLTRB(22, 12, 22, 28),
+      decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+      child: SafeArea(
+          child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+            Center(
+                child: Container(
+                    width: 38,
+                    height: 4,
+                    decoration: BoxDecoration(
+                        color: const Color(0xFFE4E8ED),
+                        borderRadius: BorderRadius.circular(4)))),
+            const SizedBox(height: 22),
+            Text('Panduan pelaporan',
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.text)),
+            const SizedBox(height: 6),
+            Text('Bantu warga sekitar dengan laporan yang jelas dan akurat.',
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 12, color: AppColors.text2, height: 1.5)),
+            const SizedBox(height: 18),
+            const _GuideStep(
+                number: '01',
+                title: 'Pilih jenis kejadian',
+                detail: 'Tentukan kategori yang paling sesuai.'),
+            const _GuideStep(
+                number: '02',
+                title: 'Lengkapi informasi',
+                detail: 'Tulis kronologi singkat dan lokasi kejadian.'),
+            const _GuideStep(
+                number: '03',
+                title: 'Tambahkan bukti',
+                detail: 'Sertakan foto atau video jika tersedia.'),
+            const _GuideStep(
+                number: '04',
+                title: 'Kirim laporan',
+                detail: 'Periksa kembali informasi sebelum dikirim.'),
+            const SizedBox(height: 18),
+            SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      onReport?.call();
+                    },
+                    icon: const Icon(Icons.edit_location_alt_rounded),
+                    label: const Text('Mulai buat laporan'),
+                    style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.red,
+                        padding: const EdgeInsets.symmetric(vertical: 14)))),
+          ])),
+    ),
+  );
+}
+
+class _GuideStep extends StatelessWidget {
+  final String number, title, detail;
+  const _GuideStep(
+      {required this.number, required this.title, required this.detail});
+  @override
+  Widget build(BuildContext context) => Padding(
+      padding: const EdgeInsets.only(bottom: 13),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          width: 34,
+          height: 34,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+              color: const Color(0xFFFFF0EF),
+              borderRadius: BorderRadius.circular(11)),
+          child: Text(number,
+              style: GoogleFonts.plusJakartaSans(
+                  color: AppColors.red,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800)),
+        ),
+        const SizedBox(width: 11),
+        Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title,
+              style: GoogleFonts.plusJakartaSans(
+                  color: AppColors.text,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800)),
+          const SizedBox(height: 2),
+          Text(detail,
+              style: GoogleFonts.plusJakartaSans(
+                  color: AppColors.text2, fontSize: 11, height: 1.4))
+        ]))
+      ]));
+}
+
+void _showEmergencyNumbers(BuildContext context) {
+  showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => Container(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+          decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(26))),
+          child: SafeArea(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+                width: 38,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: const Color(0xFFE4E8ED),
+                    borderRadius: BorderRadius.circular(4))),
+            const SizedBox(height: 16),
+            Text('Nomor penting',
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.text)),
+            const SizedBox(height: 12),
+            const _EmergencyNumberList()
+          ]))));
+}
+
+class _ShortcutPanel extends StatelessWidget {
+  final VoidCallback? onProfile, onHelp, onNotice, onChat;
+  const _ShortcutPanel(
+      {this.onProfile, this.onHelp, this.onNotice, this.onChat});
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.fromLTRB(8, 13, 8, 12),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: const Color(0xFFECE8E3)),
+            boxShadow: [
+              BoxShadow(
+                  color: const Color(0xFF3B2416).withValues(alpha: .055),
+                  blurRadius: 18,
+                  offset: const Offset(0, 6))
+            ]),
+        child: Row(children: [
+          Expanded(
+              child: _ShortcutItem(
+                  icon: Icons.person_rounded,
+                  label: 'My Info',
+                  color: const Color(0xFF45627D),
+                  onTap: onProfile)),
+          Expanded(
+              child: _ShortcutItem(
+                  icon: Icons.info_rounded,
+                  label: 'Help',
+                  color: const Color(0xFF45627D),
+                  onTap: onHelp)),
+          Expanded(
+              child: _ShortcutItem(
+                  icon: Icons.campaign_rounded,
+                  label: 'Notice',
+                  color: const Color(0xFF45627D),
+                  onTap: onNotice)),
+          Expanded(
+              child: _ShortcutItem(
+                  icon: Icons.smart_toy_rounded,
+                  label: 'Safe Chatbot',
+                  color: const Color(0xFF5793C8),
+                  onTap: onChat)),
+        ]),
+      );
+}
+
+class _ShortcutItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback? onTap;
+  const _ShortcutItem(
+      {required this.icon,
+      required this.label,
+      required this.color,
+      this.onTap});
+  @override
+  Widget build(BuildContext context) => InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Column(children: [
+            Container(
+                width: 43,
+                height: 43,
+                decoration: BoxDecoration(
+                    color: color.withValues(alpha: .10),
+                    borderRadius: BorderRadius.circular(15)),
+                child: Icon(icon, color: color, size: 22)),
+            const SizedBox(height: 6),
+            Text(label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.plusJakartaSans(
+                    color: AppColors.text,
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w700))
+          ])));
+}
+
+class _WelcomeCard extends StatelessWidget {
+  final String? name;
+  final VoidCallback? onSettings;
+  final List<LaporanModel> reports;
+  const _WelcomeCard(
+      {required this.name, required this.reports, this.onSettings});
+
+  @override
+  Widget build(BuildContext context) {
+    final firstName =
+        name == null || name!.isEmpty ? 'Teman' : name!.split(' ').first;
+    return SizedBox(
+      height: 380,
+      child: ClipRRect(
+        child: Stack(fit: StackFit.expand, children: [
+          const _HeroMascotBanner(),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.black.withValues(alpha: .34),
+                  Colors.transparent,
+                  Colors.black.withValues(alpha: .62),
+                ],
+                stops: const [0, .38, 1],
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 16, 18),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Text('SAFEZONE',
+                    style: GoogleFonts.plusJakartaSans(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.7,
+                        shadows: const [
+                          Shadow(color: Colors.black45, blurRadius: 8)
+                        ])),
+                const Spacer(),
+                _ReportNotificationButton(reports: reports),
+                IconButton(
+                    onPressed: onSettings,
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints.tightFor(width: 38, height: 38),
+                    icon: const Icon(Icons.account_circle_outlined,
+                        color: Colors.white, size: 23)),
+              ]),
+              const Spacer(),
+              Text('Halo, $firstName 👋',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.plusJakartaSans(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                      height: 1.2,
+                      shadows: const [
+                        Shadow(color: Colors.black54, blurRadius: 10)
+                      ])),
+              const SizedBox(height: 7),
+            const _CurrentLocationLine(),
+              const SizedBox(height: 5),
+              Text('Semoga perjalananmu hari ini aman.',
+                  style: GoogleFonts.plusJakartaSans(
+                      color: Colors.white.withValues(alpha: .88),
+                      fontSize: 11,
+                      height: 1.35,
+                      shadows: const [
+                        Shadow(color: Colors.black54, blurRadius: 8)
+                      ])),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _CurrentLocationLine extends StatefulWidget {
+  const _CurrentLocationLine();
+
+  @override
+  State<_CurrentLocationLine> createState() => _CurrentLocationLineState();
+}
+
+class _CurrentLocationLineState extends State<_CurrentLocationLine>
+    with AutomaticKeepAliveClientMixin<_CurrentLocationLine> {
+  String _label = 'Ketuk untuk melihat lokasimu';
+  bool _loading = false;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  Future<void> _loadLocation() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _label = 'Mencari lokasi…';
+    });
+
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        throw const _LocationMessage('Aktifkan layanan lokasi di perangkat');
+      }
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied) {
+        throw const _LocationMessage('Izin lokasi belum diberikan');
+      }
+      if (permission == LocationPermission.deniedForever) {
+        throw const _LocationMessage('Aktifkan izin lokasi di Pengaturan');
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+        timeLimit: const Duration(seconds: 10),
+      );
+      final place =
+          await _reverseGeocode(position.latitude, position.longitude);
+      if (!mounted) return;
+      setState(() {
+        _label = place ?? 'Lokasi ditemukan';
+      });
+    } on _LocationMessage catch (error) {
+      if (mounted) setState(() => _label = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(
+            () => _label = 'Lokasi belum ditemukan · ketuk untuk coba lagi');
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<String?> _reverseGeocode(double latitude, double longitude) async {
+    final uri = Uri.https('nominatim.openstreetmap.org', '/reverse', {
+      'lat': latitude.toStringAsFixed(6),
+      'lon': longitude.toStringAsFixed(6),
+      'format': 'jsonv2',
+      'addressdetails': '1',
+    });
+    final response = await http.get(uri, headers: {
+      'User-Agent': 'SafeZone/1.0 (location lookup)',
+      'Accept': 'application/json',
+    }).timeout(const Duration(seconds: 8));
+    if (response.statusCode != 200) return null;
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final address = data['address'];
+    if (address is Map<String, dynamic>) {
+      const preferred = [
+        'neighbourhood',
+        'suburb',
+        'village',
+        'town',
+        'city_district',
+        'city',
+        'county',
+      ];
+      final parts = <String>[];
+      for (final key in preferred) {
+        final value = address[key];
+        if (value is String && value.isNotEmpty && !parts.contains(value)) {
+          parts.add(value);
+          if (parts.length == 2) break;
+        }
+      }
+      if (parts.isNotEmpty) return parts.join(', ');
+    }
+
+    final displayName = data['display_name'];
+    if (displayName is String && displayName.isNotEmpty) {
+      return displayName.split(',').take(2).join(',').trim();
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return InkWell(
+      onTap: _loading ? null : _loadLocation,
+      borderRadius: BorderRadius.circular(18),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (_loading)
+            const SizedBox(
+              width: 19,
+              height: 19,
+              child: Padding(
+                padding: EdgeInsets.all(3),
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
+              ),
+            )
+          else
+            const Icon(Icons.location_on_rounded,
+                color: Colors.white, size: 20),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(_label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.plusJakartaSans(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    shadows: const [
+                      Shadow(color: Colors.black54, blurRadius: 8)
+                    ])),
+          ),
+          if (!_loading) ...[
+            const SizedBox(width: 2),
+            const Icon(Icons.chevron_right_rounded,
+                color: Colors.white70, size: 18),
+          ],
+        ]),
+      ),
+    );
+  }
+}
+
+class _LocationMessage implements Exception {
+  final String message;
+
+  const _LocationMessage(this.message);
+}
+
+class _HeroMascotBanner extends StatefulWidget {
+  const _HeroMascotBanner();
+
+  @override
+  State<_HeroMascotBanner> createState() => _HeroMascotBannerState();
+}
+
+class _HeroMascotBannerState extends State<_HeroMascotBanner>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _zoom;
+  late final VideoPlayerController _videoController;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller =
+        AnimationController(vsync: this, duration: const Duration(seconds: 7))
+          ..repeat(reverse: true);
+    _zoom = Tween<double>(begin: 1.02, end: 1.09)
+        .animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+    _videoController = VideoPlayerController.asset('assets/safezone_hero.mp4')
+      ..setLooping(true)
+      ..setVolume(0)
+      ..initialize().then((_) {
+        if (!mounted) return;
+        _videoController.play();
+        setState(() {});
+      });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _videoController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: _zoom,
+        builder: (context, child) =>
+            Transform.scale(scale: _zoom.value, child: child),
+        child: _videoController.value.isInitialized
+            ? FittedBox(
+                fit: BoxFit.cover,
+                alignment: const Alignment(0, .05),
+                child: SizedBox(
+                  width: _videoController.value.size.width,
+                  height: _videoController.value.size.height,
+                  child: VideoPlayer(_videoController),
+                ),
+              )
+            : Image.asset('assets/safezone_mascot.jpg',
+                fit: BoxFit.cover, alignment: const Alignment(0, .05)),
+      );
+}
+
+class _ReportNotificationButton extends StatelessWidget {
+  final List<LaporanModel> reports;
+  const _ReportNotificationButton({required this.reports});
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: 'Notifikasi laporan',
+      onPressed: () => _showReportNotifications(context, reports),
+      icon: Stack(clipBehavior: Clip.none, children: [
+        const Icon(Icons.notifications_none_rounded,
+            color: AppColors.text2, size: 23),
+        if (reports.isNotEmpty)
+          Positioned(
+              right: -2,
+              top: -2,
+              child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                      color: AppColors.red, shape: BoxShape.circle)))
+      ]),
+    );
+  }
+}
+
+void _showReportNotifications(
+    BuildContext context, List<LaporanModel> reports) {
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (sheetContext) => DraggableScrollableSheet(
+      initialChildSize: .62,
+      minChildSize: .38,
+      maxChildSize: .9,
+      expand: false,
+      builder: (context, scrollController) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFFFFFCF8),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        child: Column(children: [
+          const SizedBox(height: 11),
+          Container(
+              width: 38,
+              height: 4,
+              decoration: BoxDecoration(
+                  color: const Color(0xFFE4E0DA),
+                  borderRadius: BorderRadius.circular(5))),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(22, 18, 22, 12),
+            child: Row(children: [
+              Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text('Notifikasi laporan',
+                        style: GoogleFonts.plusJakartaSans(
+                            color: AppColors.text,
+                            fontSize: 19,
+                            fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 3),
+                    Text('${reports.length} laporan terbaru di SafeZone',
+                        style: GoogleFonts.plusJakartaSans(
+                            color: AppColors.text3, fontSize: 11)),
+                  ])),
+              IconButton(
+                  onPressed: () => Navigator.pop(sheetContext),
+                  icon:
+                      const Icon(Icons.close_rounded, color: AppColors.text2)),
+            ]),
+          ),
+          const Divider(height: 1, color: Color(0xFFEDE9E3)),
+          Expanded(
+            child: reports.isEmpty
+                ? Center(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Container(
+                        width: 58,
+                        height: 58,
+                        decoration: const BoxDecoration(
+                            color: Color(0xFFF1F3F6), shape: BoxShape.circle),
+                        child: const Icon(Icons.notifications_none_rounded,
+                            color: AppColors.text3, size: 27)),
+                    const SizedBox(height: 12),
+                    Text('Belum ada laporan',
+                        style: GoogleFonts.plusJakartaSans(
+                            color: AppColors.text,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 4),
+                    Text('Notifikasi laporan akan muncul di sini.',
+                        style: GoogleFonts.plusJakartaSans(
+                            color: AppColors.text3, fontSize: 11))
+                  ]))
+                : ListView.separated(
+                    controller: scrollController,
+                    padding: const EdgeInsets.fromLTRB(18, 14, 18, 24),
+                    itemCount: reports.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 9),
+                    itemBuilder: (context, index) {
+                      final report = reports[index];
+                      return Material(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(17),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(17),
+                          onTap: report.id == null
+                              ? null
+                              : () {
+                                  Navigator.pop(sheetContext);
+                                  Navigator.of(context).push(MaterialPageRoute(
+                                      builder: (_) => DetailLaporanScreen(
+                                          laporanId: report.id!,
+                                          initialLaporan: report)));
+                                },
+                          child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Row(children: [
+                                Container(
+                                    width: 44,
+                                    height: 44,
+                                    decoration: BoxDecoration(
+                                        color: const Color(0xFFFFEFED),
+                                        borderRadius:
+                                            BorderRadius.circular(14)),
+                                    child: const Icon(Icons.campaign_rounded,
+                                        color: AppColors.red, size: 22)),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                    child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                      Row(children: [
+                                        Expanded(
+                                            child: Text(
+                                                'Laporan ${report.kategori}',
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style:
+                                                    GoogleFonts.plusJakartaSans(
+                                                        color: AppColors.text,
+                                                        fontSize: 12,
+                                                        fontWeight:
+                                                            FontWeight.w800))),
+                                        const SizedBox(width: 8),
+                                        Text(_reportAge(report.createdAt),
+                                            style: GoogleFonts.plusJakartaSans(
+                                                color: AppColors.text3,
+                                                fontSize: 9))
+                                      ]),
+                                      const SizedBox(height: 4),
+                                      Text(report.deskripsi,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: GoogleFonts.plusJakartaSans(
+                                              color: AppColors.text2,
+                                              fontSize: 10.5)),
+                                      const SizedBox(height: 4),
+                                      Row(children: [
+                                        const Icon(Icons.place_outlined,
+                                            color: AppColors.red, size: 13),
+                                        const SizedBox(width: 3),
+                                        Expanded(
+                                            child: Text(report.lokasi,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style:
+                                                    GoogleFonts.plusJakartaSans(
+                                                        color: AppColors.text3,
+                                                        fontSize: 9.5)))
+                                      ]),
+                                    ])),
+                                const SizedBox(width: 6),
+                                const Icon(Icons.chevron_right_rounded,
+                                    color: AppColors.text3),
+                              ])),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ]),
+      ),
+    ),
+  );
+}
+
+class _FriendPreview extends StatelessWidget {
+  final VoidCallback? onTap;
+  const _FriendPreview({this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(20),
+            child: Padding(
+                padding: const EdgeInsets.all(15),
+                child: Row(children: [
+                  Container(
+                      width: 46,
+                      height: 46,
+                      decoration: BoxDecoration(
+                          color: const Color(0xFFEAF4EF),
+                          borderRadius: BorderRadius.circular(15)),
+                      child: const Icon(Icons.people_alt_rounded,
+                          color: Color(0xFF35846B), size: 23)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        Text('Teman perjalanan',
+                            style: GoogleFonts.plusJakartaSans(
+                                color: AppColors.text,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800)),
+                        const SizedBox(height: 3),
+                        Text('Terhubung dan berbagi lokasi dengan teman',
+                            maxLines: 2,
+                            style: GoogleFonts.plusJakartaSans(
+                                color: AppColors.text2,
+                                fontSize: 10,
+                                height: 1.4))
+                      ])),
+                  const SizedBox(width: 8),
+                  Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 7),
+                      decoration: BoxDecoration(
+                          color: const Color(0xFFEAF4EF),
+                          borderRadius: BorderRadius.circular(30)),
+                      child: Text('Segera',
+                          style: GoogleFonts.plusJakartaSans(
+                              color: const Color(0xFF35846B),
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800))),
+                ]))),
+      );
+}
+
+class _SavedHomeCard extends StatelessWidget {
+  const _SavedHomeCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<SavedLocationModel>>(
+      stream: SavedLocationService.streamAll(),
+      builder: (context, snapshot) {
+        final home = snapshot.data
+            ?.where((location) => location.label == 'Rumah')
+            .firstOrNull;
+        final hasAddress = home?.address.trim().isNotEmpty == true;
+        return Material(
+          color: const Color(0xFFFFF5EC),
+          borderRadius: BorderRadius.circular(20),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => const SavedLocationsScreen())),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(14, 13, 13, 13),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFFF0DECC)),
+              ),
+              child: Row(children: [
+                Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const Icon(Icons.home_rounded,
+                      color: AppColors.red, size: 23),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Text('Save Home',
+                            style: GoogleFonts.plusJakartaSans(
+                                color: AppColors.text,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800)),
+                        if (hasAddress) ...[
+                          const SizedBox(width: 7),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(
+                                color: const Color(0xFFE4F2E9),
+                                borderRadius: BorderRadius.circular(20)),
+                            child: Text('TERSIMPAN',
+                                style: GoogleFonts.plusJakartaSans(
+                                    color: const Color(0xFF36734E),
+                                    fontSize: 7,
+                                    letterSpacing: .3,
+                                    fontWeight: FontWeight.w800)),
+                          ),
+                        ],
+                      ]),
+                      const SizedBox(height: 4),
+                      Text(
+                        snapshot.connectionState == ConnectionState.waiting &&
+                                !snapshot.hasData
+                            ? 'Memuat lokasi rumah…'
+                            : hasAddress
+                                ? home!.address
+                                : 'Atur alamat rumah untuk akses lebih cepat',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.plusJakartaSans(
+                            color: AppColors.text2,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w500),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: const BoxDecoration(
+                      color: Colors.white, shape: BoxShape.circle),
+                  child: const Icon(Icons.arrow_forward_rounded,
+                      color: AppColors.red, size: 17),
+                ),
+              ]),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ServiceTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color color;
+  final VoidCallback? onTap;
+  const _ServiceTile(
+      {required this.icon,
+      required this.title,
+      required this.subtitle,
+      required this.color,
+      this.onTap});
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: const BorderSide(color: Color(0xFFECE8E3)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(18),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 10),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: .10),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(icon, color: color, size: 21),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.plusJakartaSans(
+                              color: AppColors.text,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w800,
+                              height: 1.2)),
+                      const SizedBox(height: 4),
+                      Text(subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.plusJakartaSans(
+                              color: AppColors.text3, fontSize: 9)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
+class _LiveReportSummary extends StatelessWidget {
+  final VoidCallback? onTap;
+  final int count;
+  final bool loading;
+  final bool error;
+  const _LiveReportSummary(
+      {this.onTap,
+      required this.count,
+      required this.loading,
+      required this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(18),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: const BorderSide(color: Color(0xFFECE8E3)),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 13, 13, 13),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                    color: const Color(0xFFFFF1E8),
+                    borderRadius: BorderRadius.circular(13)),
+                child: const Icon(Icons.radar_rounded,
+                    color: Color(0xFFB76736), size: 21),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                        error
+                            ? 'Memantau laporan warga'
+                            : loading
+                                ? 'Memuat laporan sekitar'
+                                : 'Pantauan warga',
+                        style: GoogleFonts.plusJakartaSans(
+                            color: AppColors.text,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 12.5)),
+                    const SizedBox(height: 3),
+                    Text(
+                        error
+                            ? 'Coba buka laporan warga'
+                            : loading
+                                ? 'Mengambil info terbaru'
+                                : '$count laporan keamanan terbaru',
+                        style: GoogleFonts.plusJakartaSans(
+                            color: AppColors.text3, fontSize: 10)),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded,
+                  color: AppColors.text3, size: 21),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickAction extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final Color color;
+  final VoidCallback? onTap;
+  const _QuickAction(
+      {required this.icon,
+      required this.title,
+      required this.color,
+      this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(children: [
+              Icon(icon, color: color, size: 21),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.plusJakartaSans(
+                        color: AppColors.text,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+              ),
+              const Icon(Icons.arrow_forward_ios_rounded,
+                  size: 13, color: AppColors.text3),
+            ]),
+          ),
+        ),
+      );
+}
+
+class _SectionHeading extends StatelessWidget {
+  final String title;
+  const _SectionHeading({required this.title});
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          Expanded(
+            child: Text(title,
+                style: GoogleFonts.plusJakartaSans(
+                    color: AppColors.text,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800)),
+          ),
+        ],
+      );
+}
+
+class _EmergencyNumberList extends StatelessWidget {
+  const _EmergencyNumberList();
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          child: Row(
+            children: const [
+              Expanded(
+                  child: _EmergencyNumber(
+                      title: 'Darurat', number: '112', icon: Icons.emergency)),
+              _EmergencyDivider(),
+              Expanded(
+                  child: _EmergencyNumber(
+                      title: 'Polisi',
+                      number: '110',
+                      icon: Icons.local_police)),
+              _EmergencyDivider(),
+              Expanded(
+                  child: _EmergencyNumber(
+                      title: 'Medis',
+                      number: '119',
+                      icon: Icons.medical_services)),
+            ],
+          ),
+        ),
+      );
+}
+
+class _EmergencyDivider extends StatelessWidget {
+  const _EmergencyDivider();
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 1,
+        height: 46,
+        color: AppColors.cream,
+      );
+}
+
+class _EmergencyNumber extends StatelessWidget {
+  final String title;
+  final String number;
+  final IconData icon;
+  const _EmergencyNumber(
+      {required this.title, required this.number, required this.icon});
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+        onTap: () => _dialNumber(context, number, title),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: AppColors.red, size: 19),
+              const SizedBox(height: 5),
+              Text(number,
+                  style: GoogleFonts.plusJakartaSans(
+                      color: AppColors.text,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800)),
+              const SizedBox(height: 1),
+              Text(title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.plusJakartaSans(
+                      color: AppColors.text2,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
+      );
+}
+
+class _RecentReportList extends StatelessWidget {
+  final List<LaporanModel> reports;
+  final bool loading;
+  final bool error;
+  const _RecentReportList(
+      {required this.reports, required this.loading, required this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    if (error) {
+      return const _SimpleInfoRow(
+          icon: Icons.cloud_off_outlined,
+          text: 'Tidak dapat memuat laporan saat ini.');
+    }
+    final latestReports = reports.toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final visibleReports = latestReports.take(3).toList();
+    if (visibleReports.isEmpty) {
+      return _SimpleInfoRow(
+          icon: loading
+              ? Icons.hourglass_empty_rounded
+              : Icons.check_circle_outline_rounded,
+          text: loading ? 'Memuat laporan...' : 'Belum ada laporan terbaru.');
+    }
+    return Column(
+      children: visibleReports.map((report) {
+        final category = report.kategori.toLowerCase();
+        final categoryIcon = category.contains('begal')
+            ? Icons.two_wheeler_rounded
+            : category.contains('tawuran')
+                ? Icons.groups_rounded
+                : category.contains('kecelakaan')
+                    ? Icons.car_crash_rounded
+                    : Icons.report_gmailerrorred_rounded;
+        final preview = report.imageUrl;
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Material(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: const BorderSide(color: Color(0xFFECE8E3)),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: report.id == null
+                  ? null
+                  : () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => DetailLaporanScreen(
+                          laporanId: report.id!, initialLaporan: report))),
+              borderRadius: BorderRadius.circular(18),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(13),
+                            child: SizedBox(
+                              width: 62,
+                              height: 62,
+                              child: preview != null && preview.isNotEmpty
+                                  ? Image.network(preview,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => _ReportTypeIcon(
+                                          icon: report.videoUrl == null
+                                              ? categoryIcon
+                                              : Icons
+                                                  .play_circle_outline_rounded))
+                                  : _ReportTypeIcon(
+                                      icon: report.videoUrl == null
+                                          ? categoryIcon
+                                          : Icons.play_circle_outline_rounded),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  Expanded(
+                                    child: Text(report.kategori,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: GoogleFonts.plusJakartaSans(
+                                            color: AppColors.text,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w800)),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFF2E8),
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    child: Text(_reportAge(report.createdAt),
+                                        style: GoogleFonts.plusJakartaSans(
+                                            color: const Color(0xFF9B5D32),
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w700)),
+                                  ),
+                                ]),
+                                const SizedBox(height: 5),
+                                Row(children: [
+                                  const Icon(Icons.person_outline_rounded,
+                                      size: 13, color: AppColors.text3),
+                                  const SizedBox(width: 4),
+                                  Expanded(
+                                    child: Text(report.namaUser,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: GoogleFonts.plusJakartaSans(
+                                            color: AppColors.text3,
+                                            fontSize: 10)),
+                                  ),
+                                  if (report.videoUrl != null)
+                                    const Icon(
+                                        Icons.play_circle_outline_rounded,
+                                        size: 16,
+                                        color: AppColors.text3),
+                                ]),
+                              ],
+                            ),
+                          ),
+                        ]),
+                    const SizedBox(height: 11),
+                    Text(report.deskripsi,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.plusJakartaSans(
+                            color: AppColors.text2,
+                            fontSize: 11.5,
+                            height: 1.4)),
+                    const SizedBox(height: 11),
+                    Container(height: 1, color: const Color(0xFFF2EFEB)),
+                    const SizedBox(height: 9),
+                    Row(children: [
+                      const Icon(Icons.place_outlined,
+                          color: AppColors.red, size: 14),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(report.lokasi,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.plusJakartaSans(
+                                color: AppColors.text3,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600)),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.verified_outlined,
+                          color: Color(0xFF43856D), size: 14),
+                      const SizedBox(width: 3),
+                      Text('${report.konfirmasi}',
+                          style: GoogleFonts.plusJakartaSans(
+                              color: AppColors.text2,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700)),
+                      const SizedBox(width: 7),
+                      const Icon(Icons.chevron_right_rounded,
+                          color: AppColors.text3, size: 18),
+                    ]),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _ReportTypeIcon extends StatelessWidget {
+  final IconData icon;
+  const _ReportTypeIcon({required this.icon});
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+        color: AppColors.redLight,
+        child: Icon(icon, color: AppColors.red, size: 23),
+      );
+}
+
+String _reportAge(DateTime createdAt) {
+  final difference = DateTime.now().difference(createdAt);
+  if (difference.inMinutes < 1) return 'Baru';
+  if (difference.inHours < 1) return '${difference.inMinutes} mnt';
+  if (difference.inDays < 1) return '${difference.inHours} jam';
+  if (difference.inDays < 30) return '${difference.inDays} hari';
+  return '${(difference.inDays / 30).floor()} bln';
+}
+
+class _SimpleInfoRow extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _SimpleInfoRow({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+            color: Colors.white, borderRadius: BorderRadius.circular(10)),
+        child: Row(children: [
+          Icon(icon, color: AppColors.text3, size: 19),
+          const SizedBox(width: 10),
+          Expanded(
+              child: Text(text,
+                  style: GoogleFonts.plusJakartaSans(
+                      color: AppColors.text2, fontSize: 12))),
+        ]),
+      );
+}
+
 class _TopBar extends StatelessWidget {
-  const _TopBar();
+  final VoidCallback? onAvatarTap;
+  const _TopBar({this.onAvatarTap});
 
   @override
   Widget build(BuildContext context) {
@@ -40,7 +1595,7 @@ class _TopBar extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.shield_rounded, color: AppColors.red, size: 22),
+              Image.asset('assets/logo.png', width: 24, height: 24),
               const SizedBox(width: 6),
               Text('SafeZone',
                   style: GoogleFonts.plusJakartaSans(
@@ -49,13 +1604,17 @@ class _TopBar extends StatelessWidget {
                       color: AppColors.red)),
             ],
           ),
-          Container(
-            width: 38,
-            height: 38,
-            decoration: const BoxDecoration(
-                color: AppColors.cream2, shape: BoxShape.circle),
-            child: const Icon(Icons.account_circle_rounded,
-                color: AppColors.text2, size: 22),
+          GestureDetector(
+            onTap: onAvatarTap,
+            behavior: HitTestBehavior.opaque,
+            child: Container(
+              width: 38,
+              height: 38,
+              decoration: const BoxDecoration(
+                  color: AppColors.cream2, shape: BoxShape.circle),
+              child: const Icon(Icons.account_circle_rounded,
+                  color: AppColors.text2, size: 22),
+            ),
           ),
         ],
       ),

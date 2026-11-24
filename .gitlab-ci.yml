@@ -1,0 +1,47 @@
+stages:
+  - candidate
+  - release
+  - deploy
+
+build_apk_uji:
+  stage: candidate
+  image: ghcr.io/cirruslabs/flutter:stable
+  script:
+    - flutter pub get
+    - flutter build apk --release --build-number "$CI_PIPELINE_IID"
+  artifacts:
+    name: "SafeZone-candidate-$CI_PIPELINE_IID"
+    paths:
+      - build/app/outputs/flutter-apk/app-release.apk
+    expire_in: 14 days
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+build_apk_rilis:
+  stage: release
+  image: ghcr.io/cirruslabs/flutter:stable
+  script:
+    - 'APP_VERSION=$(sed -n "s/^version: \([^+]*\).*/\1/p" pubspec.yaml)'
+    - 'test "v$APP_VERSION" = "$CI_COMMIT_TAG"'
+    - flutter pub get
+    - flutter build apk --release --build-number "$CI_PIPELINE_IID"
+  artifacts:
+    name: "SafeZone-$CI_COMMIT_TAG"
+    paths:
+      - build/app/outputs/flutter-apk/app-release.apk
+    expire_in: 1 year
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+
+pages:
+  stage: deploy
+  image: alpine:3.22
+  script:
+    - mkdir -p public/api
+    - cp cloudflare/docs/index.html public/api/index.html
+    - cp cloudflare/docs/openapi.yaml public/api/openapi.yaml
+  pages:
+    publish: public
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

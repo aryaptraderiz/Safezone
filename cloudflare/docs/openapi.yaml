@@ -1,0 +1,138 @@
+openapi: 3.0.3
+info:
+  title: SafeZone SafeBot API
+  version: 1.0.0
+  description: >-
+    Kontrak HTTP untuk SafeBot. Endpoint memerlukan Firebase Authentication ID token.
+    Simpan token secara rahasia dan gunakan akun uji. Batas laju saat ini adalah
+    5 permintaan per pengguna per 60 detik dan 30 permintaan total per 60 detik.
+servers:
+  - url: https://safezone-chatbot.safezonebot.workers.dev
+    description: Cloudflare Workers development hostname yang diberikan untuk SafeZone
+paths:
+  /:
+    post:
+      operationId: sendSafeBotMessage
+      summary: Kirim percakapan ke SafeBot
+      description: >-
+        Pesan terakhir harus berasal dari user. Maksimal 12 pesan, 1.800 karakter
+        per pesan, 7.000 karakter total, dan ukuran body 32 KiB. Worker meneruskan
+        permintaan ke model Qwen melalui Groq setelah autentikasi dan pembatasan laju.
+      security:
+        - FirebaseBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+            example:
+              messages:
+                - role: user
+                  content: Bagaimana cara membuat laporan warga?
+      responses:
+        '200':
+          description: Balasan SafeBot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+              example:
+                reply: Buka menu Lapor, lengkapi kategori, deskripsi, lokasi, lalu kirim.
+        '400':
+          description: JSON atau format pesan tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token tidak ada, tidak valid, atau sesi kedaluwarsa
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          description: Metode selain POST tidak didukung
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Ukuran body melebihi batas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Batas permintaan tercapai
+          headers:
+            Retry-After:
+              schema:
+                type: string
+              description: Perkiraan waktu tunggu dalam detik
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Respons model tidak berisi balasan yang dapat digunakan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Konfigurasi atau layanan AI sedang tidak tersedia
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    options:
+      operationId: chatbotCorsPreflight
+      summary: Pemeriksaan CORS browser
+      responses:
+        '200':
+          description: Pemeriksaan awal CORS diterima
+components:
+  securitySchemes:
+    FirebaseBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Firebase ID token
+      description: >-
+        Masukkan Firebase Authentication ID token dari akun uji. Jangan tempelkan
+        password, refresh token, atau token akun pribadi pada dokumentasi publik.
+  schemas:
+    ChatRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 12
+          description: Riwayat percakapan; pesan terakhir wajib ber-role user.
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+          minLength: 1
+          maxLength: 1800
+    ChatResponse:
+      type: object
+      required: [reply]
+      properties:
+        reply:
+          type: string
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string

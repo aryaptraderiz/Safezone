@@ -1,6 +1,7 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/material.dart';
 import 'dart:math';
+import 'user_settings_service.dart';
 
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
@@ -61,7 +62,10 @@ class NotificationService {
     required String namaUser,
     required String lokasi,
   }) async {
+    if (!await UserSettingsService.getReportNotificationsEnabled()) return;
     await init();
+    final soundEnabled =
+        await UserSettingsService.getNotificationSoundEnabled();
 
     final msgs = _messages[kategori] ?? _messages['Lainnya']!;
     final picked = msgs[Random().nextInt(msgs.length)];
@@ -69,13 +73,13 @@ class NotificationService {
     // Tambahkan nama user & lokasi ke body
     final body = '${picked.$2}\n\n📍 $lokasi — dilaporkan oleh $namaUser';
 
-    const androidDetails = AndroidNotificationDetails(
+    final androidDetails = AndroidNotificationDetails(
       'safezone_laporan',
       'Laporan SafeZone',
       channelDescription: 'Notifikasi laporan keamanan terbaru di sekitarmu',
       importance: Importance.high,
       priority: Priority.high,
-      playSound: true,
+      playSound: soundEnabled,
       enableVibration: true,
       styleInformation: BigTextStyleInformation(''),
       color: Color(0xFFC0392B),
@@ -90,7 +94,7 @@ class NotificationService {
       presentSound: true,
     );
 
-    const details = NotificationDetails(
+    final details = NotificationDetails(
       android: androidDetails,
       iOS: iosDetails,
     );

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:video_player/video_player.dart';
 import '../app_colors.dart';
 import '../services/laporan_service.dart';
 import '../models/laporan_model.dart';
+import '../widgets/report_video_player.dart';
 import 'detail_laporan_screen.dart';
 
 class AlertsScreen extends StatefulWidget {
@@ -15,6 +17,22 @@ class AlertsScreen extends StatefulWidget {
 class _AlertsScreenState extends State<AlertsScreen> {
   int _filterIdx = 0;
   final _filters = ['Terdekat', 'Terbaru', 'Kriminalitas'];
+  final Map<String, VideoPlayerController> _videoControllers = {};
+
+  VideoPlayerController _controllerFor(String url) =>
+      _videoControllers.putIfAbsent(url, () {
+        final controller = VideoPlayerController.networkUrl(Uri.parse(url));
+        controller.initialize().catchError((_) {});
+        return controller;
+      });
+
+  @override
+  void dispose() {
+    for (final controller in _videoControllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,8 +49,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Row(children: [
-                    const Icon(Icons.shield_rounded,
-                        color: AppColors.red, size: 22),
+                    Image.asset('assets/logo.png', width: 24, height: 24),
                     const SizedBox(width: 6),
                     Text('SafeZone',
                         style: GoogleFonts.plusJakartaSans(
@@ -118,10 +135,12 @@ class _AlertsScreenState extends State<AlertsScreen> {
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 28),
                         child: Text(
-                          'Gagal memuat laporan.\nCek koneksi internet atau konfigurasi Firebase.',
+                          'Gagal memuat laporan.\n${snapshot.error}',
                           textAlign: TextAlign.center,
                           style: GoogleFonts.plusJakartaSans(
-                              color: AppColors.text2, height: 1.5),
+                              color: AppColors.text2,
+                              height: 1.5,
+                              fontSize: 12),
                         ),
                       ),
                     );
@@ -137,7 +156,8 @@ class _AlertsScreenState extends State<AlertsScreen> {
                   }
 
                   return ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 100),
+                    padding: EdgeInsets.fromLTRB(
+                        20, 20, 20, 76 + MediaQuery.paddingOf(context).bottom),
                     itemCount: laporan.length + 2,
                     itemBuilder: (context, i) {
                       if (i < laporan.length) {
@@ -149,8 +169,10 @@ class _AlertsScreenState extends State<AlertsScreen> {
                             onTap: () {
                               if (item.id != null) {
                                 Navigator.of(context).push(MaterialPageRoute(
-                                  builder: (_) =>
-                                      DetailLaporanScreen(laporanId: item.id!),
+                                  builder: (_) => DetailLaporanScreen(
+                                    laporanId: item.id!,
+                                    initialLaporan: item,
+                                  ),
                                 ));
                               }
                             },
@@ -177,6 +199,74 @@ class _AlertsScreenState extends State<AlertsScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+void _openVideoPreview(
+    BuildContext context, String url, VideoPlayerController controller) {
+  showDialog<void>(
+    context: context,
+    builder: (context) => Dialog.fullscreen(
+      backgroundColor: Colors.black,
+      child: SafeArea(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Center(
+              child: ReportVideoPlayer(
+                controller: controller,
+                disposeController: false,
+                onExpand: null,
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton.filled(
+                tooltip: 'Tutup video',
+                onPressed: () => Navigator.pop(context),
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0x99000000),
+                  foregroundColor: Colors.white,
+                ),
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// Kotak foto gagal dimuat (link rusak, tidak ada internet, dsb).
+/// Sebelumnya kasus ini pakai `const SizedBox()` -> ruangnya hilang begitu
+/// saja tanpa keterangan, jadi kelihatan sama persis seperti laporan yang
+/// memang tidak punya foto. Sekarang tetap ada kotak + keterangan supaya
+/// dua kondisi ini tidak tertukar saat didiagnosis.
+class _PhotoError extends StatelessWidget {
+  final double height;
+  final double iconSize;
+  const _PhotoError({required this.height, this.iconSize = 26});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: height,
+      width: double.infinity,
+      color: AppColors.cream,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.broken_image_rounded,
+              color: AppColors.text3, size: iconSize),
+          const SizedBox(height: 6),
+          Text('Foto gagal dimuat',
+              style: GoogleFonts.plusJakartaSans(
+                  fontSize: 12, color: AppColors.text3)),
+        ],
       ),
     );
   }
@@ -253,42 +343,68 @@ class _LaporanCardUtama extends StatelessWidget {
               maxLines: 3,
               overflow: TextOverflow.ellipsis),
           // Foto Bukti
-          if (laporan.imageUrl != null) ...[
+          if (laporan.imageUrl != null || laporan.videoUrl != null) ...[
             const SizedBox(height: 10),
             ClipRRect(
               borderRadius: BorderRadius.circular(14),
-              child: Image.network(
-                laporan.imageUrl!,
-                height: 160,
-                width: double.infinity,
-                fit: BoxFit.cover,
-                loadingBuilder: (context, child, progress) => progress == null
-                    ? child
-                    : Container(
-                        height: 160,
-                        color: AppColors.cream,
-                        child: const Center(
-                            child: CircularProgressIndicator(
-                                color: AppColors.red, strokeWidth: 2)),
-                      ),
-                errorBuilder: (_, __, ___) => const SizedBox(),
-              ),
+              child: laporan.videoUrl != null
+                  ? ReportVideoPlayer(
+                      url: laporan.videoUrl,
+                      controller: context
+                          .findAncestorStateOfType<_AlertsScreenState>()!
+                          ._controllerFor(laporan.videoUrl!),
+                      onExpand: () => _openVideoPreview(
+                          context,
+                          laporan.videoUrl!,
+                          context
+                              .findAncestorStateOfType<_AlertsScreenState>()!
+                              ._controllerFor(laporan.videoUrl!)),
+                    )
+                  : Image.network(
+                      laporan.imageUrl!,
+                      height: 160,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                      loadingBuilder: (context, child, progress) =>
+                          progress == null
+                              ? child
+                              : Container(
+                                  height: 160,
+                                  color: AppColors.cream,
+                                  child: const Center(
+                                      child: CircularProgressIndicator(
+                                          color: AppColors.red,
+                                          strokeWidth: 2)),
+                                ),
+                      errorBuilder: (_, __, ___) =>
+                          const _PhotoError(height: 160),
+                    ),
             ),
           ],
           const SizedBox(height: 12),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.navigation_rounded,
-                  color: AppColors.text3, size: 14),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(laporan.lokasi,
-                    style: GoogleFonts.plusJakartaSans(
-                        fontSize: 12, color: AppColors.text3),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
+              const Padding(
+                padding: EdgeInsets.only(top: 2),
+                child: Icon(Icons.navigation_rounded,
+                    color: AppColors.text3, size: 14),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  laporan.lokasi,
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12, color: AppColors.text3, height: 1.35),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
               const Icon(Icons.verified_user_rounded,
                   color: AppColors.red, size: 14),
               const SizedBox(width: 4),
@@ -381,45 +497,84 @@ class _LaporanCardKecil extends StatelessWidget {
               overflow: TextOverflow.ellipsis),
           const SizedBox(height: 10),
           // Thumbnail foto kecil kalau ada
-          if (laporan.imageUrl != null) ...[
+          if (laporan.imageUrl != null || laporan.videoUrl != null) ...[
             ClipRRect(
               borderRadius: BorderRadius.circular(10),
-              child: Image.network(
-                laporan.imageUrl!,
-                height: 100,
-                width: double.infinity,
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => const SizedBox(),
-              ),
+              child: laporan.videoUrl != null
+                  ? ReportVideoPlayer(
+                      url: laporan.videoUrl,
+                      controller: context
+                          .findAncestorStateOfType<_AlertsScreenState>()!
+                          ._controllerFor(laporan.videoUrl!),
+                      onExpand: () => _openVideoPreview(
+                          context,
+                          laporan.videoUrl!,
+                          context
+                              .findAncestorStateOfType<_AlertsScreenState>()!
+                              ._controllerFor(laporan.videoUrl!)),
+                    )
+                  : Image.network(
+                      laporan.imageUrl!,
+                      height: 100,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                      loadingBuilder: (context, child, progress) =>
+                          progress == null
+                              ? child
+                              : Container(
+                                  height: 100,
+                                  color: AppColors.cream,
+                                  child: const Center(
+                                      child: SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                              color: AppColors.red,
+                                              strokeWidth: 2))),
+                                ),
+                      errorBuilder: (_, __, ___) =>
+                          const _PhotoError(height: 100, iconSize: 20),
+                    ),
             ),
             const SizedBox(height: 10),
           ],
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(children: [
-                const Icon(Icons.navigation_rounded,
+              const Padding(
+                padding: EdgeInsets.only(top: 2),
+                child: Icon(Icons.navigation_rounded,
                     color: AppColors.red, size: 13),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(laporan.lokasi,
-                      style: GoogleFonts.plusJakartaSans(
-                          fontSize: 12,
-                          color: AppColors.red,
-                          fontWeight: FontWeight.w700),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  laporan.lokasi,
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12,
+                      color: AppColors.red,
+                      fontWeight: FontWeight.w700,
+                      height: 1.35),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
-              ]),
-              Row(children: [
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
                 const Icon(Icons.remove_red_eye_outlined,
                     color: AppColors.text3, size: 13),
                 const SizedBox(width: 4),
                 Text('${laporan.konfirmasi} saksi',
                     style: GoogleFonts.plusJakartaSans(
                         fontSize: 12, color: AppColors.text3)),
-              ]),
-            ],
+              ],
+            ),
           ),
         ],
       ),

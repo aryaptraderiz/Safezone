@@ -1,16 +1,24 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:firebase_core/firebase_core.dart';
 import '../app_colors.dart';
 import '../models/laporan_model.dart';
 import '../services/laporan_service.dart';
 import '../services/auth_service.dart';
 import '../widgets/open_street_map_tile_layer.dart';
+import '../widgets/report_video_player.dart';
 
 class DetailLaporanScreen extends StatefulWidget {
   final String laporanId;
-  const DetailLaporanScreen({super.key, required this.laporanId});
+  final LaporanModel? initialLaporan;
+  const DetailLaporanScreen({
+    super.key,
+    required this.laporanId,
+    this.initialLaporan,
+  });
 
   @override
   State<DetailLaporanScreen> createState() => _DetailLaporanScreenState();
@@ -27,31 +35,113 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
   int _localKonfirmasi = 0;
   int _localHoax = 0;
   bool? _myVote; // true=konfirmasi, false=hoax, null=belum
+  // Selama ini true, tombol vote dikunci sementara sampai kita tahu pasti
+  // apakah user ini sudah pernah vote laporan ini (dicek dari Firestore,
+  // bukan cuma ditebak dari state layar yang selalu kosong tiap dibuka).
+  bool _checkingVote = true;
+
+  // Sebelumnya LaporanService.vote()/getMyVote() mengambil user langsung
+  // dari FirebaseAuth.instance.currentUser di dalam service. Kalau app
+  // ternyata punya sesi login yang tidak selalu identik dengan itu (AuthService
+  // dipakai di semua tempat lain, termasuk kirim laporan & komentar yang
+  // sudah terbukti jalan), FirebaseAuth.instance bisa saja null padahal user
+  // kelihatan sudah login -> vote gagal diam-diam (tombol seperti tidak
+  // merespon). Sekarang uid diambil dari sini, sumber yang sama dengan fitur
+  // lain, lalu dikirim eksplisit ke service.
+  String? get _uid => AuthService.currentUser?.uid;
+
+  void _openPhoto(String url) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _FullScreenPhoto(url: url),
+      ),
+    );
+  }
+
+  StreamSubscription? _laporanSub;
+  StreamSubscription? _komentarSub;
+  String? _errorMsg;
 
   @override
   void initState() {
     super.initState();
+    if (widget.initialLaporan != null) {
+      _laporan = widget.initialLaporan;
+      _localKonfirmasi = widget.initialLaporan!.konfirmasi;
+      _localHoax = widget.initialLaporan!.hoax;
+      final currentUid = _uid;
+      if (currentUid != null &&
+          widget.initialLaporan!.voters.containsKey(currentUid)) {
+        _myVote = widget.initialLaporan!.voters[currentUid];
+        _checkingVote = false;
+      }
+    }
+    final uid = _uid;
+    if (uid == null) {
+      _checkingVote = false;
+    } else {
+      LaporanService.getMyVote(widget.laporanId, uid: uid).then((vote) {
+        if (mounted) {
+          setState(() {
+            _myVote = vote;
+            _checkingVote = false;
+          });
+        }
+      }).catchError((_) {
+        if (mounted) setState(() => _checkingVote = false);
+      });
+    }
     // Listen laporan stream
-    LaporanService.streamById(widget.laporanId).listen((l) {
-      if (l != null && mounted) {
-        setState(() {
-          _laporan = l;
-          // Sync angka hanya kalau belum ada pending vote
-          if (_myVote == null) {
-            _localKonfirmasi = l.konfirmasi;
-            _localHoax = l.hoax;
+    _laporanSub = LaporanService.streamById(widget.laporanId).listen(
+      (l) {
+        if (mounted) {
+          if (l != null) {
+            setState(() {
+              _laporan = l;
+              _localKonfirmasi = l.konfirmasi;
+              _localHoax = l.hoax;
+              final currentUid = _uid;
+              if (currentUid != null && l.voters.containsKey(currentUid)) {
+                _myVote = l.voters[currentUid];
+                _checkingVote = false;
+              }
+            });
+          } else {
+            setState(() {
+              _errorMsg = 'Laporan tidak ditemukan atau telah dihapus.';
+            });
           }
+        }
+      },
+      onError: (e) {
+        if (mounted) {
+          setState(() {
+            _errorMsg = 'Gagal memuat detail laporan.\n$e';
+          });
+        }
+      },
+    );
+    // Listen komentar stream
+    _komentarSub =
+        LaporanService.streamKomentar(widget.laporanId).listen((list) {
+      if (mounted) setState(() => _komentars = list);
+    });
+
+    // Safety timeout: if still loading after 8s and no error/data, show retry error
+    Future.delayed(const Duration(seconds: 8), () {
+      if (mounted && _laporan == null && _errorMsg == null) {
+        setState(() {
+          _errorMsg =
+              'Koneksi lambat atau laporan tidak dapat dimuat.\nSilakan coba lagi.';
         });
       }
-    });
-    // Listen komentar stream
-    LaporanService.streamKomentar(widget.laporanId).listen((list) {
-      if (mounted) setState(() => _komentars = list);
     });
   }
 
   @override
   void dispose() {
+    _laporanSub?.cancel();
+    _komentarSub?.cancel();
     _komentarCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -59,7 +149,38 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
 
   // ── Optimistic Vote ──
   void _vote(bool isKonfirmasi) {
-    if (_myVote != null) return; // udah pernah vote
+    if (_myVote != null || _checkingVote) return; // udah pernah vote
+    final uid = _uid;
+    if (uid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Kamu harus login dulu untuk vote.',
+              style: GoogleFonts.plusJakartaSans(color: Colors.white)),
+          backgroundColor: AppColors.red,
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        ),
+      );
+      return;
+    }
+
+    if (_laporan != null && _laporan!.uid == uid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Kamu tidak bisa memvalidasi laporan buatanmu sendiri.',
+              style: GoogleFonts.plusJakartaSans(color: Colors.white)),
+          backgroundColor: AppColors.red,
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _myVote = isKonfirmasi;
       if (isKonfirmasi) {
@@ -68,10 +189,37 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
         _localHoax++;
       }
     });
-    // Kirim ke Firebase di background, no await on UI
-    LaporanService.vote(widget.laporanId, isKonfirmasi).catchError((_) {
-      // Rollback kalau gagal
+
+    // Kirim ke Firebase di background.
+    LaporanService.vote(widget.laporanId, isKonfirmasi, uid: uid)
+        .catchError((e) {
       if (mounted) {
+        final errorMsg = e is StateError
+            ? e.message
+            : (e is FirebaseException && e.code == 'permission-denied'
+                ? 'Voting ditolak oleh aturan Firestore. Aturan database perlu mengizinkan vote dari pengguna yang login.'
+                : (e is FirebaseException
+                    ? (e.message ?? 'Gagal memvalidasi.')
+                    : e.toString().replaceFirst('Exception: ', '')));
+
+        // Jika errornya karena sudah pernah vote, jangan rollback _myVote jadi null!
+        // Tombol harus tetap terkunci.
+        if (errorMsg.contains('sudah pernah') ||
+            errorMsg.contains('buatanmu sendiri')) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(errorMsg,
+                  style: GoogleFonts.plusJakartaSans(color: Colors.white)),
+              backgroundColor: AppColors.red,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              margin: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            ),
+          );
+          return;
+        }
+
         setState(() {
           _myVote = null;
           if (isKonfirmasi) {
@@ -80,6 +228,18 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
             _localHoax--;
           }
         });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMsg,
+                style: GoogleFonts.plusJakartaSans(color: Colors.white)),
+            backgroundColor: AppColors.red,
+            behavior: SnackBarBehavior.floating,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            margin: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          ),
+        );
       }
     });
   }
@@ -196,6 +356,39 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_errorMsg != null) {
+      return Scaffold(
+        backgroundColor: AppColors.bg,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_rounded, color: AppColors.text),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline_rounded,
+                    color: AppColors.red, size: 48),
+                const SizedBox(height: 12),
+                Text(
+                  _errorMsg!,
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.plusJakartaSans(
+                      color: AppColors.text, fontSize: 14),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     if (_laporan == null) {
       return const Scaffold(
         backgroundColor: AppColors.bg,
@@ -210,6 +403,10 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
     final persen = total == 0 ? 0.0 : _localKonfirmasi / total;
     final persenText = '${(persen * 100).toStringAsFixed(0)}% Terverifikasi';
     final kat = _katInfo(laporan.kategori);
+    final uid = _uid;
+    final isOwner = uid != null && laporan.uid == uid;
+    // Sudah vote (apa pun pilihannya) atau pemilik laporan -> kedua tombol dikunci permanen
+    final hasVoted = _myVote != null || _checkingVote || isOwner;
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -409,15 +606,54 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
                         ),
                         const SizedBox(height: 12),
 
-                        // ── Foto ──
-                        if (laporan.imageUrl != null) ...[
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(16),
-                            child: Image.network(
-                              laporan.imageUrl!,
-                              width: double.infinity,
-                              height: 200,
-                              fit: BoxFit.cover,
+                        if (laporan.media.isNotEmpty) ...[
+                          Text('Bukti media · ${laporan.media.length}',
+                              style: GoogleFonts.plusJakartaSans(
+                                  color: AppColors.text,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w800)),
+                          const SizedBox(height: 9),
+                          SizedBox(
+                            height: 205,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: laporan.media.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(width: 10),
+                              itemBuilder: (context, index) {
+                                final media = laporan.media[index];
+                                final width = laporan.media.length == 1
+                                    ? MediaQuery.sizeOf(context).width - 40
+                                    : 278.0;
+                                return _LaporanMediaCard(
+                                  media: media,
+                                  width: width,
+                                  onOpenPhoto: () => _openPhoto(media.url),
+                                );
+                              },
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ] else if (laporan.hasPhoto) ...[
+                          // hasPhoto true tapi imageUrl null -> upload foto
+                          // sempat gagal waktu laporan ini dikirim.
+                          Container(
+                            height: 120,
+                            width: double.infinity,
+                            decoration: BoxDecoration(
+                              color: AppColors.cream,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.cloud_off_rounded,
+                                    color: AppColors.text3, size: 26),
+                                const SizedBox(height: 6),
+                                Text('Foto gagal diupload saat laporan dikirim',
+                                    style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 12, color: AppColors.text3)),
+                              ],
                             ),
                           ),
                           const SizedBox(height: 12),
@@ -514,13 +750,86 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
                         ),
                         const SizedBox(height: 14),
 
-                        // ── Vote Buttons ──
+                        // ── Vote Status Banner & Buttons ──
+                        if (isOwner)
+                          Container(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: AppColors.cream,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.info_outline_rounded,
+                                    size: 18, color: AppColors.text3),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Ini laporan buatanmu sendiri (tidak dapat divalidasi sendiri).',
+                                    style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 12,
+                                        color: AppColors.text2,
+                                        fontWeight: FontWeight.w600),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        else if (_myVote != null)
+                          Container(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: _myVote == true
+                                  ? const Color(0xFFF0FDF4)
+                                  : const Color(0xFFFFF3F2),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: _myVote == true
+                                    ? const Color(0xFF10B981)
+                                    : AppColors.red,
+                                width: 1,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _myVote == true
+                                      ? Icons.check_circle_rounded
+                                      : Icons.cancel_rounded,
+                                  size: 18,
+                                  color: _myVote == true
+                                      ? const Color(0xFF10B981)
+                                      : AppColors.red,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Kamu sudah memvalidasi laporan ini sebagai "${_myVote == true ? 'Beneran Ada' : 'Hoax Nih'}".',
+                                    style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 12,
+                                        color: _myVote == true
+                                            ? const Color(0xFF047857)
+                                            : AppColors.red,
+                                        fontWeight: FontWeight.w700),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
                         _VoteButton(
                           icon: Icons.verified_user_rounded,
                           label: 'Beneran Ada',
                           count: _localKonfirmasi,
-                          isActive: _myVote == true,
-                          isSelected: _myVote != null,
+                          picked: _myVote == true,
+                          hasVoted: hasVoted,
+                          pickedColor: const Color(0xFF10B981),
+                          pickedBg: const Color(0xFFF0FDF4),
+                          pickedIconBg: const Color(0xFFD1FAE5),
                           onTap: () => _vote(true),
                         ),
                         const SizedBox(height: 10),
@@ -528,8 +837,11 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
                           icon: Icons.do_not_disturb_alt_rounded,
                           label: 'Hoax Nih',
                           count: _localHoax,
-                          isActive: false,
-                          isSelected: _myVote == false,
+                          picked: _myVote == false,
+                          hasVoted: hasVoted,
+                          pickedColor: AppColors.red,
+                          pickedBg: const Color(0xFFFFF3F2),
+                          pickedIconBg: AppColors.redLight,
                           onTap: () => _vote(false),
                         ),
                         const SizedBox(height: 28),
@@ -659,95 +971,97 @@ class _DetailLaporanScreenState extends State<DetailLaporanScreen> {
 }
 
 // ── Vote Button ──
+//
+// Sebelumnya: "Beneran Ada" pakai isSelected = _myVote != null (jadi
+// dianggap "terpilih" walau yang dipilih itu Hoax), dan "Hoax Nih" hanya
+// mengunci dirinya sendiri (isSelected = _myVote == false), jadi kalau vote
+// Beneran, tombol Hoax masih terlihat aktif & bisa dipencet.
+//
+// Sekarang [picked] hanya true untuk tombol yang BENAR-BENAR dipilih user,
+// dan [hasVoted] (sama untuk kedua tombol) yang mengunci keduanya begitu
+// salah satu sudah dipilih.
 class _VoteButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final int count;
-  final bool isActive;
-  final bool isSelected;
+  final bool picked;
+  final bool hasVoted;
+  final Color pickedColor;
+  final Color pickedBg;
+  final Color pickedIconBg;
   final VoidCallback onTap;
 
   const _VoteButton({
     required this.icon,
     required this.label,
     required this.count,
-    required this.isActive,
-    required this.isSelected,
+    required this.picked,
+    required this.hasVoted,
+    required this.pickedColor,
+    required this.pickedBg,
+    required this.pickedIconBg,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final voted = isSelected;
-    return GestureDetector(
-      onTap: voted ? null : onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: isActive
-              ? const Color(0xFFF0FDF4)
-              : voted
-                  ? const Color(0xFFFFF3F2)
-                  : Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-              color: isActive
-                  ? const Color(0xFF10B981)
-                  : voted
-                      ? AppColors.red
-                      : AppColors.cream2,
-              width: 1.5),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: isActive
-                    ? const Color(0xFFD1FAE5)
-                    : voted
-                        ? AppColors.redLight
-                        : AppColors.cream,
-                shape: BoxShape.circle,
+    // Terkunci begitu sudah vote (apa pun pilihannya), tapi hanya diwarnai
+    // kalau memang tombol inilah yang dipilih.
+    final locked = hasVoted && !picked;
+
+    final borderColor =
+        picked ? pickedColor : (locked ? AppColors.cream2 : AppColors.cream2);
+    final bgColor = picked ? pickedBg : Colors.white;
+    final iconBg = picked ? pickedIconBg : AppColors.cream;
+    final iconColor = picked ? pickedColor : AppColors.text3;
+
+    return Opacity(
+      opacity: locked ? 0.55 : 1,
+      child: GestureDetector(
+        onTap: hasVoted ? null : onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: borderColor, width: 1.5),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration:
+                    BoxDecoration(color: iconBg, shape: BoxShape.circle),
+                child: Icon(icon, size: 20, color: iconColor),
               ),
-              child: Icon(icon,
-                  size: 20,
-                  color: isActive
-                      ? const Color(0xFF059669)
-                      : voted
-                          ? AppColors.red
-                          : AppColors.text3),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label,
-                      style: GoogleFonts.plusJakartaSans(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.text)),
-                  if (count > 0)
-                    Text('$count ${isActive ? "Konfirmasi" : "Laporan"}',
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(label,
                         style: GoogleFonts.plusJakartaSans(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: isActive
-                                ? const Color(0xFF059669)
-                                : AppColors.text3)),
-                ],
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.text)),
+                    if (count > 0)
+                      Text('$count orang',
+                          style: GoogleFonts.plusJakartaSans(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: picked ? pickedColor : AppColors.text3)),
+                  ],
+                ),
               ),
-            ),
-            if (voted)
-              const Icon(Icons.check_circle_rounded,
-                  color: AppColors.red, size: 18)
-            else
-              const Icon(Icons.chevron_right_rounded,
-                  color: AppColors.text3, size: 20),
-          ],
+              if (picked)
+                Icon(Icons.check_circle_rounded, color: pickedColor, size: 18)
+              else if (!hasVoted)
+                const Icon(Icons.chevron_right_rounded,
+                    color: AppColors.text3, size: 20),
+            ],
+          ),
         ),
       ),
     );
@@ -850,6 +1164,127 @@ class _KomentarItem extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _LaporanMediaCard extends StatelessWidget {
+  final LaporanMedia media;
+  final double width;
+  final VoidCallback onOpenPhoto;
+
+  const _LaporanMediaCard({
+    required this.media,
+    required this.width,
+    required this.onOpenPhoto,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: SizedBox(
+        width: width,
+        height: 205,
+        child: media.isVideo
+            ? Center(child: ReportVideoPlayer(url: media.url))
+            : GestureDetector(
+                onTap: onOpenPhoto,
+                child: Stack(fit: StackFit.expand, children: [
+                  Image.network(
+                    media.url,
+                    fit: BoxFit.cover,
+                    loadingBuilder: (context, child, progress) =>
+                        progress == null
+                            ? child
+                            : const ColoredBox(
+                                color: AppColors.cream,
+                                child: Center(
+                                    child: CircularProgressIndicator(
+                                        color: AppColors.red, strokeWidth: 2)),
+                              ),
+                    errorBuilder: (_, __, ___) => const ColoredBox(
+                        color: AppColors.cream,
+                        child: Center(
+                            child: Icon(Icons.broken_image_outlined,
+                                color: AppColors.text3, size: 30))),
+                  ),
+                  const Positioned(
+                    right: 10,
+                    bottom: 10,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                          color: Color(0x99000000), shape: BoxShape.circle),
+                      child: Padding(
+                        padding: EdgeInsets.all(7),
+                        child: Icon(Icons.zoom_out_map_rounded,
+                            color: Colors.white, size: 17),
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
+      ),
+    );
+  }
+}
+
+class _FullScreenPhoto extends StatelessWidget {
+  final String url;
+
+  const _FullScreenPhoto({required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: Center(
+                child: InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 5,
+                  child: Image.network(
+                    url,
+                    fit: BoxFit.contain,
+                    loadingBuilder: (context, child, progress) =>
+                        progress == null
+                            ? child
+                            : const SizedBox(
+                                width: 32,
+                                height: 32,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                    errorBuilder: (_, __, ___) => const Icon(
+                      Icons.broken_image_outlined,
+                      color: Colors.white70,
+                      size: 48,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                tooltip: 'Tutup foto',
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.close_rounded, color: Colors.white),
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0x66000000),
+                  fixedSize: const Size.square(44),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

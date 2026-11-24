@@ -1,10 +1,10 @@
 name: safezone
 description: SafeZone - Aplikasi Keamanan Lingkungan
-publish_to: 'none'
+publish_to: "none"
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: ">=3.0.0 <4.0.0"
 
 dependencies:
   flutter:
@@ -14,24 +14,44 @@ dependencies:
   firebase_core: ^3.3.0
   firebase_auth: ^5.1.4
   cloud_firestore: ^5.2.1
+  firebase_storage: ^12.3.0
   # Notifikasi
   flutter_local_notifications: ^17.0.0
   # Utils
   intl: ^0.19.0
   url_launcher: ^6.3.0
   http: ^1.6.0
+  path_provider: ^2.1.5
   geolocator: ^12.0.0
+  shared_preferences: ^2.5.5
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
   image_picker: ^1.1.2
-  firebase_storage: ^12.3.0
+  video_player: ^2.9.2
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.4.2
+  google_sign_in: ^6.2.2
+  sensors_plus: ^7.1.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.14.1
 
 flutter:
   uses-material-design: true
   assets:
     - assets/ic_notification.png
+    - assets/logo.png
+    - assets/google_g_logo.png
+    - assets/icon/app_icon.png
+    - assets/safezone_mascot.jpg
+    - assets/safezone_hero.mp4
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/icon/app_icon.png"

@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+# Cloudflare local secrets
+cloudflare/.dev.vars
+cloudflare/.wrangler/
