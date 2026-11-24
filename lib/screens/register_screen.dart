@@ -32,9 +32,9 @@ class _RegisterScreenState extends State<RegisterScreen>
     _animCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 800));
     _fadeAnim = CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut);
-    _slideAnim = Tween<Offset>(
-            begin: const Offset(0, 0.15), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic));
+    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.15), end: Offset.zero)
+        .animate(
+            CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic));
     _animCtrl.forward();
   }
 
@@ -85,6 +85,36 @@ class _RegisterScreenState extends State<RegisterScreen>
       setState(() => _error = AuthService.errorMessage(e));
     } catch (e) {
       setState(() => _error = 'Terjadi kesalahan. Coba lagi.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _handleGoogleRegister() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final credential = await AuthService.signInWithGoogle();
+      if (credential == null || !mounted) return;
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop(true);
+      } else {
+        Navigator.of(context).pushReplacementNamed('/home');
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) setState(() => _error = AuthService.errorMessage(e));
+    } catch (e) {
+      if (!mounted) return;
+      final message = e.toString();
+      setState(() {
+        _error = message.contains('serverClientId') ||
+                message.contains('clientConfigurationError')
+            ? 'Konfigurasi Google belum lengkap. Aktifkan Google di Firebase, daftarkan SHA-1 Android, lalu unduh ulang google-services.json.'
+            : 'Google Sign-In gagal. Periksa konfigurasi Firebase dan coba lagi.';
+      });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -254,8 +284,7 @@ class _RegisterScreenState extends State<RegisterScreen>
                                     backgroundColor: AppColors.red,
                                     foregroundColor: Colors.white,
                                     elevation: 4,
-                                    shadowColor:
-                                        AppColors.red.withOpacity(0.3),
+                                    shadowColor: AppColors.red.withOpacity(0.3),
                                     padding: const EdgeInsets.symmetric(
                                         vertical: 16),
                                     shape: RoundedRectangleBorder(
@@ -325,7 +354,7 @@ class _RegisterScreenState extends State<RegisterScreen>
                                             fontWeight: FontWeight.w900,
                                             color: Color(0xFF4285F4))),
                                     label: 'Google',
-                                    onTap: () {},
+                                    onTap: _handleGoogleRegister,
                                   ),
                                 ),
                                 const SizedBox(width: 12),

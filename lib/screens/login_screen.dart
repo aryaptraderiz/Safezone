@@ -29,9 +29,9 @@ class _LoginScreenState extends State<LoginScreen>
     _animCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 800));
     _fadeAnim = CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut);
-    _slideAnim = Tween<Offset>(
-            begin: const Offset(0, 0.15), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic));
+    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.15), end: Offset.zero)
+        .animate(
+            CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic));
     _animCtrl.forward();
   }
 
@@ -74,6 +74,36 @@ class _LoginScreenState extends State<LoginScreen>
     }
   }
 
+  Future<void> _handleGoogleLogin() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final credential = await AuthService.signInWithGoogle();
+      if (credential == null || !mounted) return;
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop(true);
+      } else {
+        Navigator.of(context).pushReplacementNamed('/home');
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) setState(() => _error = AuthService.errorMessage(e));
+    } catch (e) {
+      if (!mounted) return;
+      final message = e.toString();
+      setState(() {
+        _error = message.contains('serverClientId') ||
+                message.contains('clientConfigurationError')
+            ? 'Konfigurasi Google belum lengkap. Aktifkan Google di Firebase, daftarkan SHA-1 Android, lalu unduh ulang google-services.json.'
+            : 'Google Sign-In gagal. Periksa konfigurasi Firebase dan coba lagi.';
+      });
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   Future<void> _handleForgotPassword() async {
     final email = _emailCtrl.text.trim();
     if (email.isEmpty) {
@@ -90,7 +120,8 @@ class _LoginScreenState extends State<LoginScreen>
                   fontWeight: FontWeight.w600, color: Colors.white)),
           backgroundColor: AppColors.green,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           margin: const EdgeInsets.fromLTRB(20, 0, 20, 20),
         ),
       );
@@ -233,7 +264,8 @@ class _LoginScreenState extends State<LoginScreen>
                               decoration: InputDecoration(
                                 prefixIcon: const Icon(
                                     Icons.lock_outline_rounded,
-                                    color: AppColors.text3, size: 20),
+                                    color: AppColors.text3,
+                                    size: 20),
                                 suffixIcon: GestureDetector(
                                   onTap: () =>
                                       setState(() => _obscure = !_obscure),
@@ -241,7 +273,8 @@ class _LoginScreenState extends State<LoginScreen>
                                       _obscure
                                           ? Icons.visibility_off_outlined
                                           : Icons.visibility_outlined,
-                                      color: AppColors.text3, size: 20),
+                                      color: AppColors.text3,
+                                      size: 20),
                                 ),
                                 hintText: '••••••••',
                                 hintStyle: GoogleFonts.plusJakartaSans(
@@ -291,8 +324,8 @@ class _LoginScreenState extends State<LoginScreen>
                                   foregroundColor: Colors.white,
                                   elevation: 6,
                                   shadowColor: AppColors.red.withOpacity(0.3),
-                                  padding: const EdgeInsets.symmetric(
-                                      vertical: 18),
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 18),
                                   shape: const StadiumBorder(),
                                   disabledBackgroundColor:
                                       AppColors.red.withOpacity(0.5),
@@ -335,7 +368,7 @@ class _LoginScreenState extends State<LoginScreen>
                             ]),
                             const SizedBox(height: 18),
 
-                            // Social buttons (placeholder)
+                            // Social sign-in
                             Row(children: [
                               Expanded(
                                 child: _SocialButton(
@@ -346,7 +379,7 @@ class _LoginScreenState extends State<LoginScreen>
                                           color: Color(0xFF4285F4))),
                                   label: 'Google',
                                   isDark: false,
-                                  onTap: () {},
+                                  onTap: _handleGoogleLogin,
                                 ),
                               ),
                               const SizedBox(width: 12),
@@ -437,8 +470,8 @@ class _TextField extends StatelessWidget {
       decoration: InputDecoration(
         prefixIcon: Icon(icon, color: AppColors.text3, size: 20),
         hintText: hint,
-        hintStyle: GoogleFonts.plusJakartaSans(
-            fontSize: 14, color: AppColors.text3),
+        hintStyle:
+            GoogleFonts.plusJakartaSans(fontSize: 14, color: AppColors.text3),
         filled: true,
         fillColor: Colors.white,
         contentPadding:
@@ -479,9 +512,8 @@ class _SocialButton extends StatelessWidget {
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF1A1108) : Colors.white,
           borderRadius: BorderRadius.circular(14),
-          border: isDark
-              ? null
-              : Border.all(color: AppColors.cream2, width: 1.5),
+          border:
+              isDark ? null : Border.all(color: AppColors.cream2, width: 1.5),
           boxShadow: isDark
               ? null
               : [

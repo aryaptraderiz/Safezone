@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -8,6 +10,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../app_colors.dart';
 import '../services/auth_service.dart';
 import '../services/laporan_service.dart';
+import '../services/place_search_service.dart';
 import '../models/laporan_model.dart';
 import '../widgets/open_street_map_tile_layer.dart';
 
@@ -25,9 +28,20 @@ class _LaporScreenState extends State<LaporScreen> {
   int? _selectedKat;
   final _descCtrl = TextEditingController();
   final _lokasiCtrl = TextEditingController();
-  File? _selectedImage;
+  final _searchCtrl = TextEditingController();
+  static const int _maxMediaCount = 5;
+  final List<_SelectedReportMedia> _selectedMedia = [];
   LatLng? _selectedLocation;
+  LatLng? _myPosition;
   bool _loading = false;
+  bool _locating = false;
+  bool _searching = false;
+  // true selama kolom "Detail nama jalan/tempat" masih berisi teks otomatis
+  // (dari reverse geocoding/hasil pencarian). Kalau user mengetik sendiri,
+  // teksnya tidak akan ditimpa lagi.
+  bool _autoLokasi = true;
+  Timer? _debounce;
+  List<PlaceSuggestion> _suggestions = [];
   final _mapController = MapController();
 
   final _kats = [
@@ -39,12 +53,15 @@ class _LaporScreenState extends State<LaporScreen> {
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _descCtrl.dispose();
     _lokasiCtrl.dispose();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
   void _toast(String msg) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg,
@@ -56,6 +73,139 @@ class _LaporScreenState extends State<LaporScreen> {
         margin: const EdgeInsets.fromLTRB(20, 0, 20, 20),
       ),
     );
+  }
+
+  // ── Pilih lokasi: tap peta / cari / GPS ──
+
+  /// Tandai [point] sebagai lokasi kejadian. [label] (dari hasil pencarian)
+  /// dipakai langsung sebagai nama tempat; kalau null, dicari lewat reverse
+  /// geocoding.
+  Future<void> _pickPoint(
+    LatLng point, {
+    String? label,
+    bool moveMap = true,
+  }) async {
+    setState(() => _selectedLocation = point);
+    if (moveMap) _mapController.move(point, 16);
+
+    if (label != null) {
+      _setLokasiText(label);
+      return;
+    }
+    final address = await PlaceSearchService.reverse(point);
+    // Abaikan kalau user sudah memilih titik lain selagi menunggu.
+    if (!mounted || _selectedLocation != point) return;
+    if (address != null) _setLokasiText(address);
+  }
+
+  void _setLokasiText(String text) {
+    if (_lokasiCtrl.text.trim().isEmpty || _autoLokasi) {
+      _lokasiCtrl.text = text;
+      _autoLokasi = true;
+    }
+  }
+
+  Future<void> _goToMyLocation({
+    bool select = true,
+    bool silent = false,
+  }) async {
+    if (_locating) return;
+    setState(() => _locating = true);
+    try {
+      final serviceOn = await Geolocator.isLocationServiceEnabled();
+      if (!serviceOn) {
+        if (!silent) _toast('Nyalakan GPS/lokasi dulu ya.');
+        return;
+      }
+
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) {
+        if (!silent) _toast('Izin lokasi dibutuhkan untuk fitur ini.');
+        return;
+      }
+
+      Position? pos;
+      try {
+        pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        ).timeout(const Duration(seconds: 10));
+      } catch (_) {
+        pos = await Geolocator.getLastKnownPosition();
+      }
+      if (pos == null) {
+        if (!silent) _toast('Tidak bisa membaca lokasi perangkat.');
+        return;
+      }
+      if (!mounted) return;
+
+      final point = LatLng(pos.latitude, pos.longitude);
+      _myPosition = point;
+      if (select) {
+        await _pickPoint(point);
+      } else {
+        _mapController.move(point, 16);
+      }
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
+
+  void _onSearchChanged(String value) {
+    setState(() {}); // supaya tombol hapus (x) ikut muncul/hilang
+    _debounce?.cancel();
+    final q = value.trim();
+    if (q.length < 3) {
+      setState(() {
+        _suggestions = [];
+        _searching = false;
+      });
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 450), () async {
+      if (!mounted) return;
+      setState(() => _searching = true);
+      try {
+        final results = await PlaceSearchService.search(
+          q,
+          near: _myPosition ?? _selectedLocation,
+        );
+        if (!mounted || _searchCtrl.text.trim() != q) return;
+        setState(() => _suggestions = results);
+      } catch (_) {
+        if (mounted) setState(() => _suggestions = []);
+      } finally {
+        if (mounted) setState(() => _searching = false);
+      }
+    });
+  }
+
+  Future<void> _selectSuggestion(PlaceSuggestion s) async {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _suggestions = [];
+      _searchCtrl.text = s.title;
+    });
+    try {
+      final point = await PlaceSearchService.resolve(s);
+      if (!mounted) return;
+      final label = s.subtitle.isEmpty ? s.title : '${s.title}, ${s.subtitle}';
+      await _pickPoint(point, label: label);
+    } catch (_) {
+      _toast('Gagal mengambil lokasi "${s.title}".');
+    }
+  }
+
+  void _clearSearch() {
+    _debounce?.cancel();
+    setState(() {
+      _searchCtrl.clear();
+      _suggestions = [];
+      _searching = false;
+    });
   }
 
   Future<void> _handleKirim() async {
@@ -72,19 +222,91 @@ class _LaporScreenState extends State<LaporScreen> {
       return;
     }
 
-    final user = AuthService.currentUser;
-    if (user == null) {
-      _toast('Kamu harus login dulu!');
-      return;
-    }
-
     setState(() => _loading = true);
 
     try {
-      String? imageUrl;
-      if (_selectedImage != null) {
-        imageUrl = await LaporanService.uploadFoto(_selectedImage!);
+      final user = await AuthService.restoreSession();
+      if (!mounted) return;
+      if (user == null) {
+        setState(() => _loading = false);
+        _toast('Sesi login belum aktif. Silakan masuk, lalu kirim lagi.');
+        return;
       }
+
+      final uploadedMedia = <LaporanMedia>[];
+      for (final item in List<_SelectedReportMedia>.of(_selectedMedia)) {
+        try {
+          final url = item.isVideo
+              ? await LaporanService.uploadVideo(item.file)
+              : await LaporanService.uploadFoto(item.file);
+          if (url != null && url.isNotEmpty) {
+            uploadedMedia.add(
+                LaporanMedia(url: url, type: item.isVideo ? 'video' : 'image'));
+          }
+        } catch (e) {
+          final errorMsg = e.toString().replaceFirst('Exception: ', '');
+          if (!mounted) return;
+          setState(() => _loading = false);
+
+          final tetapKirim = await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18)),
+              title: Row(
+                children: [
+                  const Icon(Icons.cloud_off_rounded,
+                      color: AppColors.red, size: 24),
+                  const SizedBox(width: 8),
+                  Text('Upload Media Gagal',
+                      style: GoogleFonts.plusJakartaSans(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 16,
+                          color: AppColors.text)),
+                ],
+              ),
+              content: Text(
+                '$errorMsg\n\nLanjutkan laporan dengan media yang berhasil diunggah? File yang gagal akan dilewati.',
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13, color: AppColors.text2, height: 1.4),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('Batal',
+                      style: GoogleFonts.plusJakartaSans(
+                          fontWeight: FontWeight.w700, color: AppColors.text3)),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.red,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: Text('Lanjutkan',
+                      style: GoogleFonts.plusJakartaSans(
+                          fontWeight: FontWeight.w700)),
+                ),
+              ],
+            ),
+          );
+
+          if (tetapKirim != true) return;
+          if (mounted) setState(() => _loading = true);
+        }
+      }
+
+      final imageUrl = uploadedMedia
+          .where((item) => !item.isVideo)
+          .map((item) => item.url)
+          .firstOrNull;
+      final videoUrl = uploadedMedia
+          .where((item) => item.isVideo)
+          .map((item) => item.url)
+          .firstOrNull;
 
       final laporan = LaporanModel(
         uid: user.uid,
@@ -94,8 +316,10 @@ class _LaporScreenState extends State<LaporScreen> {
             ? 'Lokasi dari Peta'
             : _lokasiCtrl.text.trim(),
         deskripsi: _descCtrl.text.trim(),
-        hasPhoto: _selectedImage != null,
+        hasPhoto: _selectedMedia.isNotEmpty,
         imageUrl: imageUrl,
+        videoUrl: videoUrl,
+        media: uploadedMedia,
         createdAt: DateTime.now(),
         geoPoint:
             GeoPoint(_selectedLocation!.latitude, _selectedLocation!.longitude),
@@ -106,11 +330,14 @@ class _LaporScreenState extends State<LaporScreen> {
       // Reset form
       setState(() {
         _selectedKat = null;
-        _selectedImage = null;
+        _selectedMedia.clear();
         _selectedLocation = null;
+        _suggestions = [];
+        _autoLokasi = true;
       });
       _descCtrl.clear();
       _lokasiCtrl.clear();
+      _searchCtrl.clear();
 
       widget.onKirim(); // tampilkan toast sukses
     } catch (e) {
@@ -120,15 +347,65 @@ class _LaporScreenState extends State<LaporScreen> {
     }
   }
 
-  Future<void> _pickImage() async {
+  Future<void> _pickMedia() async {
     final picker = ImagePicker();
-    final pickedFile =
-        await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
-    if (pickedFile != null) {
-      setState(() {
-        _selectedImage = File(pickedFile.path);
-      });
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Tambah foto'),
+                subtitle: const Text('Pilih beberapa foto sekaligus'),
+                onTap: () => Navigator.pop(context, 'image')),
+            ListTile(
+                leading: const Icon(Icons.video_library_outlined),
+                title: const Text('Tambah video'),
+                subtitle: const Text('Maksimal 60 detik per video'),
+                onTap: () => Navigator.pop(context, 'video')),
+          ],
+        ),
+      ),
+    );
+    if (choice == null) return;
+
+    if (choice == 'image') {
+      final remaining = _maxMediaCount - _selectedMedia.length;
+      if (remaining <= 0) {
+        _toast('Maksimal $_maxMediaCount file untuk satu laporan.');
+        return;
+      }
+      final pickedFiles = await picker.pickMultiImage(
+        imageQuality: 70,
+        limit: remaining,
+      );
+      if (pickedFiles.isEmpty || !mounted) return;
+      final files = pickedFiles.take(remaining).map((file) =>
+          _SelectedReportMedia(file: File(file.path), isVideo: false));
+      setState(() => _selectedMedia.addAll(files));
+      if (pickedFiles.length > remaining) {
+        _toast('Satu laporan maksimal $_maxMediaCount file.');
+      }
+      return;
     }
+
+    if (_selectedMedia.length >= _maxMediaCount) {
+      _toast('Maksimal $_maxMediaCount file untuk satu laporan.');
+      return;
+    }
+    final pickedFile = await picker.pickVideo(
+      source: ImageSource.gallery,
+      maxDuration: const Duration(seconds: 60),
+    );
+    if (pickedFile != null && mounted) {
+      setState(() => _selectedMedia.add(
+          _SelectedReportMedia(file: File(pickedFile.path), isVideo: true)));
+    }
+  }
+
+  void _removeMedia(_SelectedReportMedia media) {
+    setState(() => _selectedMedia.remove(media));
   }
 
   @override
@@ -189,6 +466,8 @@ class _LaporScreenState extends State<LaporScreen> {
                 Expanded(
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
                     children: [
                       Text('Ada Kejadian?',
                           style: GoogleFonts.plusJakartaSans(
@@ -275,10 +554,85 @@ class _LaporScreenState extends State<LaporScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _CLabel('Lokasi Kejadian (Tap di peta)'),
+                            _CLabel('Lokasi Kejadian'),
+                            const SizedBox(height: 3),
+                            Text(
+                              'Cari tempat, tap peta, atau pakai tombol GPS.',
+                              style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 12, color: AppColors.text3),
+                            ),
                             const SizedBox(height: 11),
+
+                            // Kolom cari
                             Container(
-                              height: 150,
+                              padding: const EdgeInsets.only(left: 4, right: 4),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                    color: AppColors.cream3, width: 1.5),
+                              ),
+                              child: Row(
+                                children: [
+                                  const SizedBox(width: 10),
+                                  const Icon(Icons.search_rounded,
+                                      color: AppColors.text2, size: 20),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _searchCtrl,
+                                      onChanged: _onSearchChanged,
+                                      textInputAction: TextInputAction.search,
+                                      style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 14, color: AppColors.text),
+                                      decoration: InputDecoration(
+                                        hintText: 'Cari tempat atau jalan...',
+                                        hintStyle: GoogleFonts.plusJakartaSans(
+                                            fontSize: 14,
+                                            color: AppColors.text3),
+                                        border: InputBorder.none,
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                                vertical: 14),
+                                      ),
+                                    ),
+                                  ),
+                                  if (_searching)
+                                    const Padding(
+                                      padding: EdgeInsets.only(right: 10),
+                                      child: SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: AppColors.red),
+                                      ),
+                                    )
+                                  else if (_searchCtrl.text.isNotEmpty)
+                                    GestureDetector(
+                                      onTap: _clearSearch,
+                                      child: const Padding(
+                                        padding: EdgeInsets.only(right: 10),
+                                        child: Icon(Icons.close_rounded,
+                                            color: AppColors.text3, size: 18),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+
+                            // Hasil pencarian
+                            if (_suggestions.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              _SuggestionBox(
+                                suggestions: _suggestions,
+                                onSelected: _selectSuggestion,
+                              ),
+                            ],
+                            const SizedBox(height: 11),
+
+                            // Peta
+                            Container(
+                              height: 220,
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(14),
                                 border: Border.all(
@@ -295,13 +649,27 @@ class _LaporScreenState extends State<LaporScreen> {
                                       initialCenter:
                                           const LatLng(-6.200000, 106.816666),
                                       initialZoom: 13,
+                                      // Arahkan kamera ke posisi kita saat peta
+                                      // muncul (tanpa memilih titiknya).
+                                      onMapReady: () => _goToMyLocation(
+                                          select: false, silent: true),
                                       onTap: (tapPos, latLng) {
-                                        setState(
-                                            () => _selectedLocation = latLng);
+                                        FocusScope.of(context).unfocus();
+                                        setState(() => _suggestions = []);
+                                        _pickPoint(latLng, moveMap: false);
                                       },
                                     ),
                                     children: [
                                       const OpenStreetMapTileLayer(),
+                                      if (_myPosition != null)
+                                        MarkerLayer(markers: [
+                                          Marker(
+                                            point: _myPosition!,
+                                            width: 22,
+                                            height: 22,
+                                            child: const _MyLocationDot(),
+                                          )
+                                        ]),
                                       if (_selectedLocation != null)
                                         MarkerLayer(markers: [
                                           Marker(
@@ -317,6 +685,41 @@ class _LaporScreenState extends State<LaporScreen> {
                                         ]),
                                     ],
                                   ),
+                                  // Tombol GPS: pusatkan peta + pilih lokasi kita
+                                  Positioned(
+                                    right: 10,
+                                    bottom: 10,
+                                    child: GestureDetector(
+                                      onTap: _locating ? null : _goToMyLocation,
+                                      child: Container(
+                                        width: 42,
+                                        height: 42,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          shape: BoxShape.circle,
+                                          boxShadow: [
+                                            BoxShadow(
+                                                color: Colors.black
+                                                    .withOpacity(0.15),
+                                                blurRadius: 10,
+                                                offset: const Offset(0, 3))
+                                          ],
+                                        ),
+                                        child: _locating
+                                            ? const Padding(
+                                                padding: EdgeInsets.all(11),
+                                                child:
+                                                    CircularProgressIndicator(
+                                                        strokeWidth: 2,
+                                                        color: AppColors.red),
+                                              )
+                                            : const Icon(
+                                                Icons.my_location_rounded,
+                                                color: AppColors.red,
+                                                size: 22),
+                                      ),
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
@@ -330,6 +733,8 @@ class _LaporScreenState extends State<LaporScreen> {
                                 ),
                               ),
                             const SizedBox(height: 11),
+
+                            // Detail nama jalan/tempat (terisi otomatis, bisa diedit)
                             Container(
                               padding: const EdgeInsets.only(left: 4, right: 4),
                               decoration: BoxDecoration(
@@ -346,6 +751,9 @@ class _LaporScreenState extends State<LaporScreen> {
                                   Expanded(
                                     child: TextField(
                                       controller: _lokasiCtrl,
+                                      // Kalau user mengetik sendiri, jangan
+                                      // ditimpa teks otomatis lagi.
+                                      onChanged: (_) => _autoLokasi = false,
                                       style: GoogleFonts.plusJakartaSans(
                                           fontSize: 14, color: AppColors.text),
                                       decoration: InputDecoration(
@@ -408,73 +816,36 @@ class _LaporScreenState extends State<LaporScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _CLabel('Upload Bukti Foto/Video'),
-                            const SizedBox(height: 11),
-                            GestureDetector(
-                              onTap: _pickImage,
-                              child: CustomPaint(
-                                painter: _DashedBorderPainter(
-                                  color: _selectedImage != null
-                                      ? AppColors.red
-                                      : AppColors.cream3,
-                                  borderRadius: 16,
-                                  dashWidth: 7,
-                                  dashSpace: 5,
-                                  strokeWidth: 2,
-                                ),
-                                child: Container(
-                                  width: double.infinity,
-                                  height: _selectedImage != null ? 200 : null,
-                                  padding: _selectedImage != null
-                                      ? EdgeInsets.zero
-                                      : const EdgeInsets.symmetric(
-                                          vertical: 26),
-                                  clipBehavior: Clip.hardEdge,
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                  child: _selectedImage != null
-                                      ? Image.file(
-                                          _selectedImage!,
-                                          fit: BoxFit.cover,
-                                          width: double.infinity,
-                                        )
-                                      : Column(
-                                          children: [
-                                            Container(
-                                              width: 48,
-                                              height: 48,
-                                              decoration: BoxDecoration(
-                                                  color: AppColors.redLight,
-                                                  shape: BoxShape.circle),
-                                              child: const Icon(
-                                                  Icons.add_a_photo_outlined,
-                                                  color: AppColors.red,
-                                                  size: 24),
-                                            ),
-                                            const SizedBox(height: 7),
-                                            Text(
-                                                'Tap untuk upload atau ambil foto.',
-                                                style:
-                                                    GoogleFonts.plusJakartaSans(
-                                                        fontSize: 14,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                        color: AppColors.text),
-                                                textAlign: TextAlign.center),
-                                            const SizedBox(height: 4),
-                                            Text(
-                                                'Opsional, tapi ngebantu banget!',
-                                                style:
-                                                    GoogleFonts.plusJakartaSans(
-                                                        fontSize: 12,
-                                                        color: AppColors.text3),
-                                                textAlign: TextAlign.center),
-                                          ],
-                                        ),
-                                ),
+                            Row(children: [
+                              Expanded(child: _CLabel('Bukti foto & video')),
+                              Text('${_selectedMedia.length}/$_maxMediaCount',
+                                  style: GoogleFonts.plusJakartaSans(
+                                      color: AppColors.text3,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700)),
+                            ]),
+                            const SizedBox(height: 5),
+                            Text(
+                                'Pilih beberapa foto dan video dalam satu laporan.',
+                                style: GoogleFonts.plusJakartaSans(
+                                    color: AppColors.text3, fontSize: 11)),
+                            const SizedBox(height: 13),
+                            if (_selectedMedia.isEmpty)
+                              _EmptyMediaPicker(onTap: _pickMedia)
+                            else
+                              Wrap(
+                                spacing: 9,
+                                runSpacing: 9,
+                                children: [
+                                  for (final item in _selectedMedia)
+                                    _ReportMediaThumbnail(
+                                      item: item,
+                                      onRemove: () => _removeMedia(item),
+                                    ),
+                                  if (_selectedMedia.length < _maxMediaCount)
+                                    _AddMediaTile(onTap: _pickMedia),
+                                ],
                               ),
-                            ),
                           ],
                         ),
                       ),
@@ -523,6 +894,221 @@ class _LaporScreenState extends State<LaporScreen> {
 }
 
 // ── Helper classes ──
+
+/// Daftar hasil pencarian lokasi (maks. beberapa baris, tanpa scroll sendiri).
+class _SelectedReportMedia {
+  final File file;
+  final bool isVideo;
+
+  const _SelectedReportMedia({required this.file, required this.isVideo});
+}
+
+class _EmptyMediaPicker extends StatelessWidget {
+  final VoidCallback onTap;
+  const _EmptyMediaPicker({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: CustomPaint(
+          painter: _DashedBorderPainter(
+            color: AppColors.cream3,
+            borderRadius: 16,
+            dashWidth: 7,
+            dashSpace: 5,
+            strokeWidth: 1.5,
+          ),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 12),
+            decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: .55),
+                borderRadius: BorderRadius.circular(16)),
+            child: Column(children: [
+              const Icon(Icons.add_photo_alternate_outlined,
+                  color: AppColors.red, size: 28),
+              const SizedBox(height: 7),
+              Text('Tambah foto atau video',
+                  style: GoogleFonts.plusJakartaSans(
+                      color: AppColors.text,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700)),
+              const SizedBox(height: 3),
+              Text('Maks. 5 file · video hingga 60 detik',
+                  style: GoogleFonts.plusJakartaSans(
+                      color: AppColors.text3, fontSize: 10)),
+            ]),
+          ),
+        ),
+      );
+}
+
+class _ReportMediaThumbnail extends StatelessWidget {
+  final _SelectedReportMedia item;
+  final VoidCallback onRemove;
+  const _ReportMediaThumbnail({required this.item, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+        borderRadius: BorderRadius.circular(13),
+        child: SizedBox(
+          width: 96,
+          height: 96,
+          child: Stack(fit: StackFit.expand, children: [
+            if (item.isVideo)
+              const ColoredBox(
+                  color: Color(0xFF252525),
+                  child: Icon(Icons.play_circle_outline_rounded,
+                      color: Colors.white, size: 34))
+            else
+              Image.file(item.file, fit: BoxFit.cover),
+            if (item.isVideo)
+              Positioned(
+                left: 6,
+                bottom: 6,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: .62),
+                      borderRadius: BorderRadius.circular(6)),
+                  child: Text('VIDEO',
+                      style: GoogleFonts.plusJakartaSans(
+                          color: Colors.white,
+                          fontSize: 8,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: .4)),
+                ),
+              ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: Material(
+                color: Colors.black.withValues(alpha: .58),
+                shape: const CircleBorder(),
+                child: InkWell(
+                  onTap: onRemove,
+                  customBorder: const CircleBorder(),
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.close_rounded,
+                        color: Colors.white, size: 15),
+                  ),
+                ),
+              ),
+            ),
+          ]),
+        ),
+      );
+}
+
+class _AddMediaTile extends StatelessWidget {
+  final VoidCallback onTap;
+  const _AddMediaTile({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(13),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(13),
+          child: Container(
+            width: 96,
+            height: 96,
+            decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(13),
+                border: Border.all(color: AppColors.cream3)),
+            child: const Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.add_rounded, color: AppColors.red, size: 25),
+                SizedBox(height: 3),
+                Text('Tambah',
+                    style: TextStyle(
+                        color: AppColors.text2,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
+class _SuggestionBox extends StatelessWidget {
+  final List<PlaceSuggestion> suggestions;
+  final ValueChanged<PlaceSuggestion> onSelected;
+
+  const _SuggestionBox({required this.suggestions, required this.onSelected});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.cream3, width: 1.5),
+      ),
+      child: Column(
+        children: [
+          for (var i = 0; i < suggestions.length; i++) ...[
+            if (i > 0) const Divider(height: 1, color: AppColors.cream),
+            ListTile(
+              dense: true,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+              leading: const Icon(Icons.location_on_outlined,
+                  color: AppColors.text2, size: 22),
+              title: Text(
+                suggestions[i].title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.text),
+              ),
+              subtitle: suggestions[i].subtitle.isEmpty
+                  ? null
+                  : Text(
+                      suggestions[i].subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.plusJakartaSans(
+                          fontSize: 11, color: AppColors.text2),
+                    ),
+              onTap: () => onSelected(suggestions[i]),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Titik biru kecil penanda posisi kita di peta pemilih lokasi.
+class _MyLocationDot extends StatelessWidget {
+  const _MyLocationDot();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF07869A),
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 3),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          )
+        ],
+      ),
+    );
+  }
+}
 
 class _DashedBorderPainter extends CustomPainter {
   final Color color;

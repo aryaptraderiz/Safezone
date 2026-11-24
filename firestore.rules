@@ -1,0 +1,203 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function acceptedRequest(requestId) {
+      let path = /databases/$(database)/documents/safe_friend_requests/$(requestId);
+      return exists(path) && get(path).data.status == 'accepted';
+    }
+
+    function areAcceptedFriends(firstUid, secondUid) {
+      return acceptedRequest(firstUid + '_' + secondUid)
+        || acceptedRequest(secondUid + '_' + firstUid);
+    }
+
+    function locationSharingEnabled(uid) {
+      let profilePath = /databases/$(database)/documents/users/$(uid);
+      return exists(profilePath)
+        && get(profilePath).data.get('safeFriendSharingEnabled', false) == true;
+    }
+
+    function validVoteUpdate(reportId) {
+      let voterUid = request.auth.uid;
+      let oldVoters = resource.data.get('voters', {});
+      let newVoters = request.resource.data.get('voters', {});
+      let oldConfirmed = resource.data.get('konfirmasi', 0);
+      let oldHoax = resource.data.get('hoax', 0);
+      let newConfirmed = request.resource.data.get('konfirmasi', 0);
+      let newHoax = request.resource.data.get('hoax', 0);
+      let votePath = /databases/$(database)/documents/laporan/$(reportId)/votes/$(voterUid);
+
+      return resource.data.get('uid', '') != voterUid
+        && oldVoters is map
+        && newVoters is map
+        && !oldVoters.keys().hasAny([voterUid])
+        && newVoters.get(voterUid, null) is bool
+        && newVoters.diff(oldVoters).affectedKeys().hasOnly([voterUid])
+        && newVoters.diff(oldVoters).affectedKeys().hasAll([voterUid])
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['voters', 'konfirmasi', 'hoax'])
+        && oldConfirmed is int
+        && oldHoax is int
+        && newConfirmed is int
+        && newHoax is int
+        && (
+          (newVoters.get(voterUid, null) == true
+            && newConfirmed == oldConfirmed + 1
+            && newHoax == oldHoax)
+          ||
+          (newVoters.get(voterUid, null) == false
+            && newHoax == oldHoax + 1
+            && newConfirmed == oldConfirmed)
+        )
+        && existsAfter(votePath)
+        && getAfter(votePath).data.get('isKonfirmasi', null)
+             == newVoters.get(voterUid, null)
+        && getAfter(votePath).data.get('createdAt', null) == request.time;
+    }
+
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+
+      match /saved_locations/{docId} {
+        allow read, write: if signedIn() && request.auth.uid == uid;
+      }
+    }
+
+    // QR lookup documents expose only the name and uid intentionally encoded
+    // by a user in their own Safe Friend QR, never their full user profile.
+    match /safe_friend_codes/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasAll(['uid', 'name', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'createdAt'])
+        && request.resource.data.name is string
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'createdAt'])
+        && request.resource.data.name is string;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /safe_friend_requests/{requestId} {
+      // Users may check their own outgoing/incoming deterministic request IDs
+      // even before a document exists, and may query requests that name them.
+      allow get: if signedIn()
+        && (requestId.matches('^' + request.auth.uid + '_.*$')
+          || requestId.matches('^.*_' + request.auth.uid + '$'));
+      allow list: if signedIn()
+        && (resource.data.requesterUid == request.auth.uid
+          || resource.data.recipientUid == request.auth.uid);
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          'requesterUid', 'requesterName', 'recipientUid', 'recipientName',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'requesterUid', 'requesterName', 'recipientUid', 'recipientName',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.requesterUid == request.auth.uid
+        && request.resource.data.recipientUid is string
+        && request.resource.data.recipientUid != request.auth.uid
+        && requestId == request.auth.uid + '_' + request.resource.data.recipientUid
+        && request.resource.data.requesterName is string
+        && request.resource.data.recipientName is string
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'updatedAt'])
+        && request.resource.data.updatedAt == request.time
+        && (
+          (resource.data.status == 'pending'
+            && request.auth.uid == resource.data.recipientUid
+            && request.resource.data.status in ['accepted', 'rejected'])
+          ||
+          (resource.data.status == 'pending'
+            && request.auth.uid == resource.data.requesterUid
+            && request.resource.data.status == 'cancelled')
+          ||
+          (resource.data.status in ['rejected', 'cancelled', 'removed']
+            && request.auth.uid == resource.data.requesterUid
+            && request.resource.data.status == 'pending')
+          ||
+          (resource.data.status == 'accepted'
+            && (request.auth.uid == resource.data.requesterUid
+              || request.auth.uid == resource.data.recipientUid)
+            && request.resource.data.status == 'removed')
+        );
+
+      allow delete: if false;
+    }
+
+    match /safe_friend_locations/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid
+        || (resource.data.sharingEnabled == true
+          && request.time - resource.data.updatedAt < duration.value(10, 'm')
+          && locationSharingEnabled(uid)
+          && areAcceptedFriends(request.auth.uid, uid)));
+      allow list: if false;
+      allow create, update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.uid == uid
+        && locationSharingEnabled(uid)
+        && request.resource.data.keys().hasAll([
+          'uid', 'latitude', 'longitude', 'sharingEnabled', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'uid', 'latitude', 'longitude', 'sharingEnabled', 'updatedAt'
+        ])
+        && (request.resource.data.latitude is int
+          || request.resource.data.latitude is float)
+        && (request.resource.data.longitude is int
+          || request.resource.data.longitude is float)
+        && request.resource.data.sharingEnabled == true
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /laporan/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      // Hanya transaksi vote sah dari akun yang bukan pemilik laporan yang
+      // boleh mengubah voters dan jumlah konfirmasi/hoax.
+      allow update: if signedIn() && validVoteUpdate(id);
+      allow delete: if signedIn() && request.auth.uid == resource.data.uid;
+
+      match /votes/{voterUid} {
+        allow get: if signedIn() && request.auth.uid == voterUid;
+        allow list: if false;
+        allow create: if signedIn()
+          && request.auth.uid == voterUid
+          && exists(/databases/$(database)/documents/laporan/$(id))
+          && get(/databases/$(database)/documents/laporan/$(id)).data.uid != request.auth.uid
+          && request.resource.data.keys().hasAll(['isKonfirmasi', 'createdAt'])
+          && request.resource.data.keys().hasOnly(['isKonfirmasi', 'createdAt'])
+          && request.resource.data.isKonfirmasi is bool
+          && request.resource.data.createdAt == request.time
+          && existsAfter(/databases/$(database)/documents/laporan/$(id))
+          && getAfter(/databases/$(database)/documents/laporan/$(id)).data
+               .get('voters', {}).get(voterUid, null)
+               == request.resource.data.isKonfirmasi;
+        allow update, delete: if false;
+      }
+    }
+
+    match /laporan/{id}/komentar/{komentarId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update: if signedIn();
+    }
+  }
+}
